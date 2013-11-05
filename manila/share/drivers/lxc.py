@@ -305,7 +305,8 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         domain = self._get_domain(share['project_id'])
         domain_ip = self._get_domain_ip(domain)[0]
         LOG.debug("Domain IP is %s" % domain_ip)
-        self._get_helper(share).setup_helper(domain_ip)
+        self._get_helper(share).setup_helper(domain_ip, self._get_lxc_path(
+                                                        share['project_id']))
         self._get_helper(share).create_export(share['name'], domain_ip,
                                               recreate=True)
 
