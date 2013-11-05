@@ -71,6 +71,9 @@ share_opts = [
     cfg.StrOpt('template_rootfs_path',
                default='$share_export_root/template/rootfs',
                help='Template rootfs'),
+    cfg.StrOpt('share_path_in_lxc',
+               default='/Shares',
+               help='Path in container, where shares will be mounted'),
 ]
 
 CONF = cfg.CONF
@@ -277,6 +280,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         except Exception:
             LOG.debug('Trying to start domain')
         domain.create()
+        #waiting while domain starts and retrieve IP
         time.sleep(10)
 
     def create_share(self, ctx, share):
@@ -369,8 +373,12 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _get_mount_path(self, share):
         """Returns path where share is mounted."""
+        path_in_lxc = self.configuration.share_path_in_lxc
+        path_in_lxc = path_in_lxc[1:] if path_in_lxc[0] == '/' else path_in_lxc
         return os.path.join(self.configuration.share_export_root,
-                            share['project_id'], 'rootfs', share['name'])
+                            share['project_id'], 'rootfs',
+                            path_in_lxc,
+                            share['name'])
 
     def _get_lxc_path(self, tenant_id):
         """Returns path where container fs will be created."""
@@ -423,6 +431,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if dom_state != libvirt.VIR_DOMAIN_RUNNING:
             LOG.debug("Domain is not running. Trying to start")
             domain.create()
+            #waiting while domain starts and retrieves IP
             time.sleep(10)
         return domain
 
@@ -431,6 +440,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         try:
             domain = self._conn.defineXML(xml)
             domain.create()
+            #waiting while domain starts and retrieves IP
             time.sleep(30)
         except Exception as e:
             LOG.error(_("An error occurred while trying to define a domain"
@@ -493,7 +503,9 @@ class UNFSHelper(NASHelperBase):
 
     def create_export(self, share_name, domain_ip, recreate=False):
         """Create new export, delete old one if exists."""
-        return ':'.join([domain_ip, os.path.join('/', share_name)])
+        return ':'.join([domain_ip,
+                    os.path.join('/', self.configuration.share_path_in_lxc,
+                                 share_name)])
 
     def remove_export(self, share_name, domain_ip):
         """Remove export."""
@@ -516,12 +528,7 @@ class UNFSHelper(NASHelperBase):
         self._execute('ssh', 'root@%s' % domain_ip,
                       'echo "%s    %s(rw,no_subtree_check)" >> %s' %
                       (local_share_path, access, '/etc/exports'))
-        #(aostapenko)unfsd can't be restarted more civilized way
-        self._execute('ssh', 'root@%s' % domain_ip,
-                      '-o StrictHostKeyChecking=no', 'killall -9 unfsd')
-        time.sleep(1)
-        self._execute('ssh', 'root@%s' % domain_ip,
-                      '-o StrictHostKeyChecking=no', 'unfsd')
+        self._restart_unfs(domain_ip)
 
     def deny_access(self, export_location, share_name, access_type, access,
                     force=False):
@@ -540,11 +547,15 @@ class UNFSHelper(NASHelperBase):
         self._execute('ssh', 'root@%s' % domain_ip,
                       'echo "%s" > %s' %
                       ('\n'.join(out), '/etc/exports'))
+        self._restart_unfs(domain_ip)
+
+    def _restart_unfs(self, domain_ip):
+        #unfsd can't be restarted more civilized way
         self._execute('ssh', 'root@%s' % domain_ip,
                       '-o StrictHostKeyChecking=no', 'killall -9 unfsd')
-        time.sleep(1)
         self._execute('ssh', 'root@%s' % domain_ip,
                       '-o StrictHostKeyChecking=no', 'unfsd')
+
 
 
 class CIFSHelper(NASHelperBase):
@@ -564,8 +575,12 @@ class CIFSHelper(NASHelperBase):
             self._execute('ssh', 'root@%s' % domain_ip,
                           '-o StrictHostKeyChecking=no',
                           'service smbd stop')
-        except Exception:
-            pass
+        except Exception as e:
+            if 'unknown service' in e:
+                LOG.debug('smbd daemon is not running. Starting')
+        self._execute('ssh', 'root@%s' % domain_ip,
+                '-o StrictHostKeyChecking=no',
+                'smbd -s %s -D' % self.local_config_path)
         self._recreate_config(domain_ip)
         self._ensure_daemon_started(domain_ip)
 
@@ -667,7 +682,7 @@ class CIFSHelper(NASHelperBase):
         parser.set('global', 'security', 'user')
         parser.set('global', 'server string', '%h server (Samba, Openstack)')
 
-        self._update_config(parser, domain_ip)
+        self._update_config(parser, domain_ip, restart=False)
 
     def _update_config(self, parser, domain_ip, restart=True):
         """Check if new configuration is correct and save it."""
@@ -685,9 +700,9 @@ class CIFSHelper(NASHelperBase):
                 self._execute('ssh', 'root@%s' % domain_ip,
                               '-o StrictHostKeyChecking=no',
                               'killall -9 smbd')
-            except Exception:
-                pass
-            time.sleep(1)
+            except Exception as e:
+                if 'unknown service' in e:
+                    LOG.debug('smbd is not running. Starting')
             self._execute('ssh', 'root@%s' % domain_ip,
                       '-o StrictHostKeyChecking=no',
                       'smbd -s %s -D' % self.local_config_path)
