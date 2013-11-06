@@ -317,7 +317,9 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def delete_share(self, ctx, share):
         """Delete a share."""
         try:
-            domain = self._get_domain(share['project_id'])
+            domain = self._get_domain(share['project_id'], create=False)
+            if not domain:
+                return None
             domain_ip = self._get_domain_ip(domain)[0]
             LOG.debug("Domain IP is %s" % domain_ip)
             self._get_helper(share).setup_helper(domain_ip,
@@ -422,9 +424,11 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         except libvirt.libvirtError:
             return None
 
-    def _get_domain(self, tenant_id):
+    def _get_domain(self, tenant_id, create=True):
         domain = self._get_domain_by_name(tenant_id)
         if not domain:
+            if not create:
+                return None
             self._create_rootfs_for_domain(tenant_id)
             domain = self._create_domain(self._get_xml(tenant_id))
         dom_state = domain.info()[0]
@@ -457,6 +461,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                           os.path.join(lxc_path, '..'),
                           run_as_root=True)
         self._try_execute('chmod', '774', lxc_path, run_as_root=True)
+
 
 
 class NASHelperBase(object):
@@ -536,12 +541,12 @@ class UNFSHelper(NASHelperBase):
         domain_ip, local_share_path = export_location.split(':')
         out, _ = self._execute('ssh', 'root@%s' % domain_ip,
                             'cat /etc/exports')
-        out = out.split('\n')
+        out = out.splitlines()
         LOG.error(out)
         for export in out:
             result = re.search(re.escape(local_share_path) + '[\s\n]*' +
                                re.escape(access), export)
-            if result or export == '':
+            if result:
                 out.remove(export)
 
         self._execute('ssh', 'root@%s' % domain_ip,
@@ -550,12 +555,12 @@ class UNFSHelper(NASHelperBase):
         self._restart_unfs(domain_ip)
 
     def _restart_unfs(self, domain_ip):
-        #unfsd can't be restarted more civilized way
+        """Restarts unfsd.
+        unfsd can't be restarted more civilized way"""
         self._execute('ssh', 'root@%s' % domain_ip,
                       '-o StrictHostKeyChecking=no', 'killall -9 unfsd')
         self._execute('ssh', 'root@%s' % domain_ip,
                       '-o StrictHostKeyChecking=no', 'unfsd')
-
 
 
 class CIFSHelper(NASHelperBase):
