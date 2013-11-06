@@ -247,6 +247,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                     raise exception.ShareIsBusy(share_name=share['name'])
                 else:
                     LOG.info('Unable to umount: %s', exc)
+            self._restart_domain(self._get_domain(share['project_id']))
             #remove dir
             try:
                 os.rmdir(mount_path)
@@ -371,6 +372,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 LOG.warn(_("%s is already mounted"), device_name)
             else:
                 raise
+        self._restart_domain(self._get_domain(share['project_id']))
         return mount_path
 
     def _get_mount_path(self, share):
@@ -415,7 +417,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return templ.replace('<name>lxc_template</name>',
                              '<name>%s</name>' % tenant_id).\
                      replace("<source dir='/change_path'/>",
-                             "<source dir='/%s'/>" % container_rootfs)
+                             "<source dir='%s'/>" % container_rootfs)
 
     def _get_domain_by_name(self, instance_name):
         """Retrieve libvirt domain object given an instance name."""
@@ -531,7 +533,8 @@ class UNFSHelper(NASHelperBase):
                                               access=access)
 
         self._execute('ssh', 'root@%s' % domain_ip,
-                      'echo "%s    %s(rw,no_subtree_check)" >> %s' %
+                      'echo "%s    %s(rw,no_subtree_checi,all_squash,\
+                      anonuid=0,anongid=0)" >> %s' %
                       (local_share_path, access, '/etc/exports'))
         self._restart_unfs(domain_ip)
 
@@ -583,6 +586,8 @@ class CIFSHelper(NASHelperBase):
         except Exception as e:
             if 'unknown service' in e:
                 LOG.debug('smbd daemon is not running. Starting')
+            else:
+                raise
         self._execute('ssh', 'root@%s' % domain_ip,
                 '-o StrictHostKeyChecking=no',
                 'smbd -s %s -D' % self.local_config_path)
@@ -708,6 +713,8 @@ class CIFSHelper(NASHelperBase):
             except Exception as e:
                 if 'unknown service' in e:
                     LOG.debug('smbd is not running. Starting')
+                else:
+                    raise
             self._execute('ssh', 'root@%s' % domain_ip,
                       '-o StrictHostKeyChecking=no',
                       'smbd -s %s -D' % self.local_config_path)
