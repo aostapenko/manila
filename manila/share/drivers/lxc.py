@@ -27,6 +27,7 @@ import re
 import shutil
 import subprocess
 import time
+import threading
 
 from lxml import etree
 from manila import db
@@ -71,16 +72,14 @@ share_opts = [
     cfg.StrOpt('template_rootfs_path',
                default='$share_export_root/template/rootfs',
                help='Template rootfs'),
-    cfg.StrOpt('share_path_in_lxc',
-               default='/Shares',
-               help='Path in container, where shares will be mounted'),
 ]
 
 CONF = cfg.CONF
 CONF.register_opts(share_opts)
 
 uri = 'lxc:///'
-
+share_path_in_lxc = 'shares'
+lock = threading.RLock()
 
 class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     """Executes commands relating to Shares."""
@@ -88,6 +87,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def __init__(self, db, *args, **kwargs):
         """Do initialization."""
         super(LXCShareDriver, self).__init__(*args, **kwargs)
+        self.tenants_ips = {}
         self.db = db
         self._helpers = None
         self.configuration.append_config_values(share_opts)
@@ -282,6 +282,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         except Exception:
             LOG.debug('Trying to start domain')
         domain.create()
+        LOG.debug('!!!!!!!!!!Rebooting domain!!!!!!!!!!!')
         #waiting while domain starts and retrieve IP
         time.sleep(10)
 
@@ -367,16 +368,13 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 LOG.warn(_("%s is already mounted"), device_name)
             else:
                 raise
-        self._restart_domain(self._get_domain(share['project_id']))
+        self._get_domain(share['project_id'], restart=True)
         return mount_path
 
     def _get_mount_path(self, share):
         """Returns path where share is mounted."""
-        path_in_lxc = self.configuration.share_path_in_lxc
-        path_in_lxc = path_in_lxc[1:] if path_in_lxc[0] == '/' else path_in_lxc
         return os.path.join(self._get_lxc_path(share['project_id']),
-                            path_in_lxc,
-                            share['name'])
+                            share_path_in_lxc, share['name'])
 
     def _get_lxc_path(self, tenant_id):
         """Returns path where container fs will be created."""
@@ -421,25 +419,29 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             return None
 
     def _get_domain(self, tenant_id, create=True, restart=False):
-        domain = self._get_domain_by_name(tenant_id)
-        if not domain:
-            if not create:
-                return None
-            self._create_rootfs_for_domain(tenant_id)
-            domain = self._define_domain(self._get_xml(tenant_id))
-        elif restart:
-            self._restart_domain(domain)
-        dom_state = domain.info()[0]
-        if dom_state != libvirt.VIR_DOMAIN_RUNNING:
-            LOG.debug("Domain is not running. Trying to start")
-            domain.create()
-            #waiting while domain starts and retrieves IP
-            time.sleep(40)
-        domain.ip = self._get_domain_ip(domain)[0]
-        domain.rootfs_path = self._get_lxc_path(tenant_id) 
-        for helper in self._helpers.values():
-            helper.setup_helper(domain.ip, domain.rootfs_path)
-        return domain
+        with lock:
+            domain = self._get_domain_by_name(tenant_id)
+            if not domain:
+                if not create:
+                    return None
+                self._create_rootfs_for_domain(tenant_id)
+                domain = self._define_domain(self._get_xml(tenant_id))
+            elif restart:
+                self._restart_domain(domain)
+            dom_state = domain.info()[0]
+            if dom_state != libvirt.VIR_DOMAIN_RUNNING:
+                LOG.debug("Domain is not running. Trying to start")
+                domain.create()
+                #waiting while domain starts and retrieves IP
+                time.sleep(40)
+            if self.tenants_ips.get(tenant_id) is None:
+                self.tenants_ips[tenant_id] = \
+                        self._get_domain_ip(domain)[0]
+            domain.ip = self.tenants_ips[tenant_id]
+            domain.rootfs_path = self._get_lxc_path(tenant_id) 
+            for helper in self._helpers.values():
+                helper.setup_helper(domain.ip, domain.rootfs_path)
+            return domain
 
     def _define_domain(self, xml):
         """Define a domain. Domain is not starting here"""
@@ -507,7 +509,7 @@ class UNFSHelper(NASHelperBase):
     def create_export(self, share_name, domain_ip, recreate=False):
         """Create new export, delete old one if exists."""
         return ':'.join([domain_ip,
-                    os.path.join('/', self.configuration.share_path_in_lxc,
+                    os.path.join('/', share_path_in_lxc,
                                  share_name)])
 
     def remove_export(self, share_name, domain_ip):
@@ -520,10 +522,11 @@ class UNFSHelper(NASHelperBase):
             reason = 'only ip access type allowed'
             raise exception.InvalidShareAccess(reason)
         local_share_path = os.path.join('/',
-                                        self.configuration.share_path_in_lxc,
+                                        share_path_in_lxc,
                                         share_name)
         #check if presents in export
         out, _ = self._execute('ssh', 'root@%s' % domain_ip, 'showmount -e')
+        print out
         out = re.search(re.escape(local_share_path) + '[\s\n]*' +
                         re.escape(access), out)
         if out is not None:
@@ -540,7 +543,7 @@ class UNFSHelper(NASHelperBase):
                     force=False):
         """Deny access to the host."""
         local_share_path = os.path.join('/',
-                                        self.configuration.share_path_in_lxc,
+                                        share_path_in_lxc,
                                         share_name)
         out, _ = self._execute('ssh', 'root@%s' % domain_ip,
                                'cat /etc/exports')
@@ -599,7 +602,7 @@ class CIFSHelper(NASHelperBase):
     def create_export(self, share_name, domain_ip, recreate=False):
         """Create new export, delete old one if exists."""
         local_share_path = os.path.join('/',
-                                        self.configuration.share_path_in_lxc,
+                                        share_path_in_lxc,
                                         share_name)
         parser = ConfigParser.ConfigParser()
         parser.read(self.config)
@@ -619,8 +622,6 @@ class CIFSHelper(NASHelperBase):
         parser.set(share_name, 'create mask', '0755')
         parser.set(share_name, 'hosts deny', '0.0.0.0/0')  # denying all ips
         parser.set(share_name, 'hosts allow', '127.0.0.1')
-        self._execute('ssh', 'root@%s' % domain_ip,
-                      'chown nobody -R %s' % local_share_path)
         self._update_config(parser, domain_ip)
         return '//%s/%s' % (domain_ip, share_name)
 
@@ -635,11 +636,14 @@ class CIFSHelper(NASHelperBase):
         self._execute('ssh', 'root@%s' % domain_ip,
                       'smbcontrol', 'all', 'close-share', share_name)
 
-    def allow_access(self, local_path, share_name, access_type, access):
+    def allow_access(self, domain_ip, share_name, access_type, access):
         """Allow access to the host."""
         if access_type != 'ip':
             reason = 'only ip access type allowed'
             raise exception.InvalidShareAccess(reason)
+        local_share_path = os.path.join('/',
+                                        share_path_in_lxc,
+                                        share_name)
         parser = ConfigParser.ConfigParser()
         parser.read(self.config)
 
@@ -647,11 +651,13 @@ class CIFSHelper(NASHelperBase):
         if access in hosts.split():
             raise exception.ShareAccessExists(access_type=access_type,
                                               access=access)
+        self._execute('ssh', 'root@%s' % domain_ip,
+                      '"chown nobody -R %s"' % local_share_path)
         hosts += ' %s' % (access,)
         parser.set(share_name, 'hosts allow', hosts)
         self._update_config(parser)
 
-    def deny_access(self, local_path, share_name, access_type, access,
+    def deny_access(self, domain_ip, share_name, access_type, access,
                     force=False):
         """Deny access to the host."""
         parser = ConfigParser.ConfigParser()
