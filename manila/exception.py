@@ -435,6 +435,10 @@ class InvalidShare(ManilaException):
     message = _("Invalid share: %(reason)s")
 
 
+class PortLimitExceeded(QuotaError):
+    msg_fmt = _("Maximum number of ports exceeded")
+
+
 class ShareAccessNotFound(NotFound):
     message = _("Access_id %(access_id)s not found")
 
