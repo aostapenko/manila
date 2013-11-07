@@ -22,7 +22,7 @@
                        :class:`manila.share.drivers.lvm.LVMShareDriver`.
 """
 
-from manila import context
+from manila import context, network
 from manila import exception
 from manila import manager
 from manila.openstack.common import excutils
@@ -65,6 +65,7 @@ class ShareManager(manager.SchedulerDependentManager):
                         share_driver,
                         self.db,
                         configuration=self.configuration)
+        self.network_api = network.API()
 
     def init_host(self):
         """Initialization for a standalone service."""
@@ -92,6 +93,18 @@ class ShareManager(manager.SchedulerDependentManager):
 
         self.publish_service_capabilities(ctxt)
 
+    def allocate_network(self, tenant, net_ids=None):
+        nets = []
+        if net_ids:
+            for net_id in net_ids:
+                nets.append(self.network_api.get_network(net_id))
+        else:
+            nets = self.network_api.get_all_tenant_networks(tenant)
+        ports = {}
+        for net in nets:
+            ports[net] = self.network_api.create_port(tenant, net['id'])
+        return ports
+
     def create_share(self, context, share_id, request_spec=None,
                      filter_properties=None, snapshot_id=None):
         """Creates a share."""
@@ -112,6 +125,7 @@ class ShareManager(manager.SchedulerDependentManager):
                                                              snapshot_ref)
             else:
                 self.driver.allocate_container(context, share_ref)
+
             export_location = self.driver.create_share(context, share_ref)
             self.db.share_update(context, share_id,
                                  {'export_location': export_location})
