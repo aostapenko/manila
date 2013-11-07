@@ -531,8 +531,8 @@ class UNFSHelper(NASHelperBase):
                                               access=access)
 
         self._execute('ssh', 'root@%s' % domain_ip,
-                      'echo "%s    %s(rw,no_subtree_checi,all_squash,\
-                      anonuid=0,anongid=0)" >> %s' %
+                      'echo "%s    %s(rw,no_subtree_checi,all_squash'
+                      'anonuid=0,anongid=0)" >> %s' %
                       (local_share_path, access, '/etc/exports'))
         self._restart_unfs(domain_ip)
 
