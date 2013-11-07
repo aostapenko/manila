@@ -115,9 +115,9 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                         "%s") % uri)
             raise
 
-        self._setup_helpers()
+        self._init_helpers()
 
-    def _setup_helpers(self):
+    def _init_helpers(self):
         """Initializes protocol-specific NAS drivers."""
         self._helpers = {}
         for helper_str in self.configuration.share_lvm_helpers:
@@ -289,7 +289,6 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         """Is called after allocate_space to create share on the volume."""
         domain = self._get_domain(share['project_id'])
         LOG.debug("Domain IP is %s" % domain.ip)
-        self._get_helper(share).setup_helper(domain.ip, domain.rootfs_path)
         location = self._get_helper(share).create_export(share['name'],
                                                          domain.ip)
         return location
@@ -308,7 +307,6 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self._mount_device(share, device_name)
         domain = self._get_domain(share['project_id'])
         LOG.debug("Domain IP is %s" % domain.ip)
-        self._get_helper(share).setup_helper(domain.ip, domain.rootfs_path)
         self._get_helper(share).create_export(share['name'], domain.ip,
                                               recreate=True)
 
@@ -319,7 +317,6 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             if not domain:
                 return None
             LOG.debug("Domain IP is %s" % domain.ip)
-            self._get_helper(share).setup_helper(domain.ip, domain.rootfs_path)
             self._get_helper(share).remove_export(share['name'], domain.ip)
         except exception.ProcessExecutionError:
             LOG.info("Can't remove share %r" % share['id'])
@@ -332,14 +329,18 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def allow_access(self, ctx, share, access):
         """Allow access to the share."""
-        self._get_helper(share).allow_access(share['export_location'],
+        domain = self._get_domain(share['project_id'])
+        self._get_helper(share).allow_access(domain.ip,
                                              share['name'],
                                              access['access_type'],
                                              access['access_to'])
 
     def deny_access(self, ctx, share, access):
         """Allow access to the share."""
-        self._get_helper(share).deny_access(share['export_location'],
+        domain = self._get_domain(share['project_id'], create=False)
+        if not domain:
+            return None
+        self._get_helper(share).deny_access(domain.ip,
                                             share['name'],
                                             access['access_type'],
                                             access['access_to'])
@@ -425,7 +426,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             if not create:
                 return None
             self._create_rootfs_for_domain(tenant_id)
-            domain = self._create_domain(self._get_xml(tenant_id))
+            domain = self._define_domain(self._get_xml(tenant_id))
         elif restart:
             self._restart_domain(domain)
         dom_state = domain.info()[0]
@@ -433,12 +434,14 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             LOG.debug("Domain is not running. Trying to start")
             domain.create()
             #waiting while domain starts and retrieves IP
-            time.sleep(20)
+            time.sleep(40)
         domain.ip = self._get_domain_ip(domain)[0]
         domain.rootfs_path = self._get_lxc_path(tenant_id) 
+        for helper in self._helpers.values():
+            helper.setup_helper(domain.ip, domain.rootfs_path)
         return domain
 
-    def _create_domain(self, xml):
+    def _define_domain(self, xml):
         """Define a domain. Domain is not starting here"""
         try:
             domain = self._conn.defineXML(xml)
@@ -453,11 +456,10 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         """Create a rootfs for domain from template."""
         lxc_path = self._get_lxc_path(tenant_id)
         self._try_execute('mkdir', '-p', lxc_path)
-        self._try_execute('cp', '-r', CONF.template_rootfs_path,
+        self._try_execute('cp', '-rp', CONF.template_rootfs_path,
                           os.path.join(lxc_path, '..'),
                           run_as_root=True)
-        self._try_execute('chmod', '774', lxc_path, run_as_root=True)
-
+        self._try_execute('chmod', '777', lxc_path, run_as_root=True)
 
 
 class NASHelperBase(object):
@@ -512,13 +514,15 @@ class UNFSHelper(NASHelperBase):
         """Remove export."""
         pass
 
-    def allow_access(self, export_location, share_name, access_type, access):
+    def allow_access(self, domain_ip, share_name, access_type, access):
         """Allow access to the host"""
         if access_type != 'ip':
             reason = 'only ip access type allowed'
             raise exception.InvalidShareAccess(reason)
+        local_share_path = os.path.join('/',
+                                        self.configuration.share_path_in_lxc,
+                                        share_name)
         #check if presents in export
-        domain_ip, local_share_path = export_location.split(':')
         out, _ = self._execute('ssh', 'root@%s' % domain_ip, 'showmount -e')
         out = re.search(re.escape(local_share_path) + '[\s\n]*' +
                         re.escape(access), out)
@@ -532,12 +536,14 @@ class UNFSHelper(NASHelperBase):
                       (local_share_path, access, '/etc/exports'))
         self._restart_unfs(domain_ip)
 
-    def deny_access(self, export_location, share_name, access_type, access,
+    def deny_access(self, domain_ip, share_name, access_type, access,
                     force=False):
         """Deny access to the host."""
-        domain_ip, local_share_path = export_location.split(':')
+        local_share_path = os.path.join('/',
+                                        self.configuration.share_path_in_lxc,
+                                        share_name)
         out, _ = self._execute('ssh', 'root@%s' % domain_ip,
-                            'cat /etc/exports')
+                               'cat /etc/exports')
         out = out.splitlines()
         LOG.error(out)
         for export in out:
@@ -572,13 +578,15 @@ class CIFSHelper(NASHelperBase):
         """Initialize environment."""
         self.config = os.path.join(lxc_path, 'smb.conf')
         self.local_config_path = '/smb.conf'
-        self._execute('cp', self.configuration.smb_config_path, self.config)
+        self._execute('cp','-p', self.configuration.smb_config_path,
+                      self.config, run_as_root=True)
+        self._execute('chmod','777', self.config, run_as_root=True)
         try:
             self._execute('ssh', 'root@%s' % domain_ip,
                           '-o StrictHostKeyChecking=no',
                           'service smbd stop')
         except Exception as e:
-            if 'unknown service' in e:
+            if 'Unknown instance' in str(e):
                 LOG.debug('smbd daemon is not running. Starting')
             else:
                 raise
@@ -590,7 +598,9 @@ class CIFSHelper(NASHelperBase):
 
     def create_export(self, share_name, domain_ip, recreate=False):
         """Create new export, delete old one if exists."""
-        path_in_container = os.path.join('/', share_name)
+        local_share_path = os.path.join('/',
+                                        self.configuration.share_path_in_lxc,
+                                        share_name)
         parser = ConfigParser.ConfigParser()
         parser.read(self.config)
         #delete old one
@@ -601,7 +611,7 @@ class CIFSHelper(NASHelperBase):
                 raise exception.Error('Section exists')
         #Create new one
         parser.add_section(share_name)
-        parser.set(share_name, 'path', path_in_container)
+        parser.set(share_name, 'path', local_share_path)
         parser.set(share_name, 'browseable', 'yes')
         parser.set(share_name, 'guest ok', 'yes')
         parser.set(share_name, 'read only', 'no')
@@ -610,7 +620,7 @@ class CIFSHelper(NASHelperBase):
         parser.set(share_name, 'hosts deny', '0.0.0.0/0')  # denying all ips
         parser.set(share_name, 'hosts allow', '127.0.0.1')
         self._execute('ssh', 'root@%s' % domain_ip,
-                      'chown nobody -R %s' % path_in_container)
+                      'chown nobody -R %s' % local_share_path)
         self._update_config(parser, domain_ip)
         return '//%s/%s' % (domain_ip, share_name)
 
@@ -705,7 +715,7 @@ class CIFSHelper(NASHelperBase):
                               '-o StrictHostKeyChecking=no',
                               'killall -9 smbd')
             except Exception as e:
-                if 'unknown service' in e:
+                if 'unknown service' in str(e):
                     LOG.debug('smbd is not running. Starting')
                 else:
                     raise
