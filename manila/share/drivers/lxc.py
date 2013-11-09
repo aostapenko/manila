@@ -94,7 +94,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def __init__(self, db, *args, **kwargs):
         """Do initialization."""
         super(LXCShareDriver, self).__init__(*args, **kwargs)
-        self.tenants_ips = {}
+        self.tenants_domains = {}
         self.tenants_locks = {}
         self.db = db
         self._helpers = None
@@ -285,10 +285,8 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _restart_domain(self, domain):
         LOG.debug('Rebooting domain %s' % domain.name())
-        try:
+        if domain.info()[0] == libvirt.VIR_DOMAIN_RUNNING:
             domain.destroy()
-        except Exception:
-            LOG.debug('Trying to start domain')
         domain.create()
         #waiting while domain starts and retrieve IP
         time.sleep(10)
@@ -296,7 +294,6 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def create_share(self, ctx, share):
         """Is called after allocate_space to create share on the volume."""
         domain = self._get_domain(share['project_id'])
-        LOG.debug("Domain IP is %s" % domain.ip)
         location = self._get_helper(share).create_export(share['name'],
                                                          domain.ip)
         return location
@@ -314,7 +311,6 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         device_name = self._local_path(share)
         self._mount_device(share, device_name)
         domain = self._get_domain(share['project_id'])
-        LOG.debug("Domain IP is %s" % domain.ip)
         self._get_helper(share).create_export(share['name'], domain.ip,
                                               recreate=True)
 
@@ -324,7 +320,6 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             domain = self._get_domain(share['project_id'], create=False)
             if not domain:
                 return None
-            LOG.debug("Domain IP is %s" % domain.ip)
             self._get_helper(share).remove_export(share['name'], domain.ip)
         except exception.ProcessExecutionError:
             LOG.info("Can't remove share %r" % share['id'])
@@ -425,37 +420,45 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         except libvirt.libvirtError:
             return None
 
+    def _init_domain(self, domain):
+        pass
+
     @synchronized
     def _get_domain(self, tenant_id, create=True, restart=False):
+        domain = self.tenants_domains.get(tenant_id)
+        if domain is None:
+            self.tenants_domains[tenant_id] = \
+                    self._setup_domain(tenant_id, create)
+            domain = self.tenants_domains[tenant_id]
+            self._init_domain(domain)
+        if domain:
+            dom_state = domain.info()[0]
+            if restart or dom_state != libvirt.VIR_DOMAIN_RUNNING:
+                self._restart_domain(domain)
+        return domain
+
+    def _setup_domain(self, tenant_id, create):
         domain = self._get_domain_by_name(tenant_id)
         if not domain:
             if not create:
                 return None
             self._create_rootfs_for_domain(tenant_id)
-            domain = self._define_domain(self._get_xml(tenant_id))
-        elif restart:
-            self._restart_domain(domain)
-        dom_state = domain.info()[0]
-        if dom_state != libvirt.VIR_DOMAIN_RUNNING:
-            LOG.debug("Domain is not running. Trying to start")
-            domain.create()
-            #waiting while domain starts and retrieves IP
-            time.sleep(60)
-        # retrieves ip for domain, we can't do it with setdefault, because
-        # setdefault calls function, that is set as default parameter
-        if self.tenants_ips.get(tenant_id) is None:
-            self.tenants_ips[tenant_id] = \
-                    self._get_domain_ip(domain)[0]
-        domain.ip = self.tenants_ips[tenant_id]
+            domain = self._create_domain(self._get_xml(tenant_id))
+        domain.ip = self._get_domain_ip(domain)[0]
         domain.rootfs_path = self._get_lxc_path(tenant_id)
+        LOG.debug("Domain %s  IP is %s" % (tenant_id, domain.ip))
         for helper in self._helpers.values():
             helper.setup_helper(domain.ip, domain.rootfs_path)
         return domain
 
-    def _define_domain(self, xml):
-        """Define a domain. Domain is not starting here"""
+    def _create_domain(self, xml):
+        """Creates a persistent domain."""
         try:
             domain = self._conn.defineXML(xml)
+            domain.create()
+            #waiting while domain starts and retrieves IP
+            time.sleep(60)
+
         except Exception as e:
             LOG.error(_("An error occurred while trying to define a domain"
                         " with xml: %s") % xml)
