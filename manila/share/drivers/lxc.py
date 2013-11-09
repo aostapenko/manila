@@ -79,6 +79,15 @@ uri = 'lxc:///'
 share_path_in_lxc = 'shares'
 
 
+def synchronized(f):
+    """Decorates function _get_domain with unique locks for each tenants
+    """
+    def wrapped_func(self, tenant_id, *args, **kwargs):
+        with self.tenants_locks.setdefault(tenant_id, threading.RLock()):
+            return f(self, tenant_id, *args, **kwargs)
+    return wrapped_func
+
+
 class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     """Executes commands relating to Shares."""
 
@@ -275,14 +284,14 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return IPaddr
 
     def _restart_domain(self, domain):
+        LOG.debug('Rebooting domain %s' % domain.name())
         try:
             domain.destroy()
         except Exception:
             LOG.debug('Trying to start domain')
         domain.create()
-        LOG.debug('!!!!!!!!!!Rebooting domain!!!!!!!!!!!')
         #waiting while domain starts and retrieve IP
-        time.sleep(20)
+        time.sleep(10)
 
     def create_share(self, ctx, share):
         """Is called after allocate_space to create share on the volume."""
@@ -416,14 +425,6 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         except libvirt.libvirtError:
             return None
 
-    def synchronized(f):
-        """Decorates function _get_domain with unique locks for each tenants
-        """
-        def wrapped_func(self, tenant_id, *args, **kwargs):
-            with self.tenants_locks.setdefault(tenant_id, threading.RLock()):
-                return f(self, tenant_id, *args, **kwargs)
-        return wrapped_func
-
     @synchronized
     def _get_domain(self, tenant_id, create=True, restart=False):
         domain = self._get_domain_by_name(tenant_id)
@@ -441,7 +442,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             #waiting while domain starts and retrieves IP
             time.sleep(60)
         # retrieves ip for domain, we can't do it with setdefault, because
-        # setdefault calls function, if it is set as default parameter
+        # setdefault calls function, that is set as default parameter
         if self.tenants_ips.get(tenant_id) is None:
             self.tenants_ips[tenant_id] = \
                     self._get_domain_ip(domain)[0]
