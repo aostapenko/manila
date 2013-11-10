@@ -427,10 +427,6 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         except libvirt.libvirtError:
             return None
 
-    def _init_domain(self, domain):
-        for helper in self._helpers.values():
-            helper.init_helper(domain.ip, domain.rootfs_path)
-
     @synchronized
     def _get_domain(self, tenant_id, create=True, restart=False):
         domain = self.tenants_domains.get(tenant_id)
@@ -439,13 +435,16 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                     self._setup_domain(tenant_id, create)
             domain = self.tenants_domains[tenant_id]
             if domain:
-                self._init_domain(domain)
+                # init helpers on lxc initialization
+                for helper in self._helpers.values():
+                    helper.init_helper(domain.ip, domain.rootfs_path)
         if domain:
             dom_state = domain.info()[0]
             if restart or dom_state != libvirt.VIR_DOMAIN_RUNNING:
                 self._restart_domain(domain)
-            for helper in self._helpers.values():
-                helper.setup_helper(domain.ip)
+                # init helpers after lxc restart
+                for helper in self._helpers.values():
+                    helper.setup_helper(domain.ip)
         return domain
 
     def _setup_domain(self, tenant_id, create):
@@ -529,6 +528,7 @@ class UNFSHelper(NASHelperBase):
         super(UNFSHelper, self).__init__(execute, config_object)
     
     def init_helper(self, domain_ip, lxc_path):
+        """Setups helper on lxc first start"""
         try:
             self._execute('rm', os.path.join(lxc_path, 'etc/exports'),
                           run_as_root=True)
@@ -538,6 +538,7 @@ class UNFSHelper(NASHelperBase):
         self.setup_helper(domain_ip)
 
     def setup_helper(self, domain_ip):
+        """Setups helper on each lxc restart."""
         try:
             self._execute('ssh', 'root@%s' % domain_ip,
                           '-o StrictHostKeyChecking=no', 'unfsd')
@@ -616,6 +617,7 @@ class CIFSHelper(NASHelperBase):
         self.test_config = "%s_" % (self.configuration.smb_config_path)
 
     def init_helper(self, domain_ip, lxc_path):
+        """Setups helper on lxc first start"""
         self.config = os.path.join(lxc_path, 'smb.conf')
         self.local_config_path = '/smb.conf'
         self._execute('cp', '-p', self.configuration.smb_config_path,
@@ -625,7 +627,7 @@ class CIFSHelper(NASHelperBase):
         self.setup_helper(domain_ip)
 
     def setup_helper(self, domain_ip):
-        """Initialize environment."""
+        """Setups helper on each lxc restart."""
         self._stop_service(domain_ip)
         self._start_daemon(domain_ip)
         self._ensure_daemon_started(domain_ip)
