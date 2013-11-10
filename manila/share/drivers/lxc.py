@@ -64,9 +64,6 @@ share_opts = [
                     'NFS=manila.share.drivers.lxc.UNFSHelper',
                 ],
                 help='Specify list of share export helpers.'),
-    cfg.StrOpt('lxc_xml_template',
-               default='/etc/manila/lxc_template.xml',
-               help='Template XML file for LXC creation'),
     cfg.StrOpt('template_rootfs_path',
                default='$share_export_root/template/rootfs',
                help='Template rootfs'),
@@ -407,18 +404,26 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                       *extra_flags, run_as_root=True)
 
     def _get_xml(self, tenant_id):
-        try:
-            templ = open(CONF.lxc_xml_template).read()
-        except Exception:
-            LOG.error(_("An error occurred while trying to open xml: "
-                        "%s") % CONF.lxc_xml_template)
-            raise
-        container_rootfs = os.path.join(self.configuration.share_export_root,
-                                        tenant_id, 'rootfs')
-        return templ.replace('<name>lxc_template</name>',
-                             '<name>%s</name>' % tenant_id).\
-                     replace("<source dir='/change_path'/>",
-                             "<source dir='%s'/>" % container_rootfs)
+        root = etree.Element('domain', type='lxc')
+        etree.SubElement(root, 'name').text = tenant_id
+        etree.SubElement(root, 'memory').text = '332768'
+        os = etree.SubElement(root, 'os')
+        etree.SubElement(os, 'type').text = 'exe'
+        etree.SubElement(os, 'init').text = '/sbin/init'
+        etree.SubElement(root, 'vcpu').text = '1'
+        etree.SubElement(root, 'clock', offset='utc')
+        etree.SubElement(root, 'on_poweroff').text = 'destroy'
+        etree.SubElement(root, 'on_reboot').text = 'restart'
+        etree.SubElement(root, 'on_crash').text = 'destroy'
+        devices = etree.SubElement(root, 'devices')
+        filesystem = etree.SubElement(devices, 'filesystem', type='mount')
+        etree.SubElement(filesystem, 'source',
+                         dir=self._get_lxc_path(tenant_id))
+        etree.SubElement(filesystem, 'target', dir='/')
+        interface = etree.SubElement(devices, 'interface', type='network')
+        etree.SubElement(interface, 'source', network='service')
+        etree.SubElement(devices, 'console', type='pty')
+        return etree.tostring(root, pretty_print=True)
 
     def _get_domain_by_name(self, instance_name):
         """Retrieve libvirt domain object given an instance name."""
