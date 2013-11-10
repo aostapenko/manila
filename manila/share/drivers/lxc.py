@@ -70,6 +70,9 @@ share_opts = [
     cfg.StrOpt('template_rootfs_path',
                default='$share_export_root/template/rootfs',
                help='Template rootfs'),
+    cfg.StrOpt('path_to_key',
+               default='~/.ssh/id_rsa.pub',
+               help='SSH publick key of user, that runs manila-shr'),
 ]
 
 CONF = cfg.CONF
@@ -80,7 +83,7 @@ share_path_in_lxc = 'shares'
 
 
 def synchronized(f):
-    """Decorates function _get_domain with unique locks for each tenants
+    """Decorates function _get_domain with unique locks for each tenant
     """
     def wrapped_func(self, tenant_id, *args, **kwargs):
         with self.tenants_locks.setdefault(tenant_id, threading.RLock()):
@@ -112,6 +115,9 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if not self.configuration.share_export_ip:
             msg = (_("share_export_ip doesn't specified"))
             raise exception.InvalidParameterValue(err=msg)
+        if not os.path.exists(self.configuration.path_to_key):
+            msg = (_("Hosts paublic key does not exist"))
+            raise exception.InvalidParameterValue(err=msg)
 
     def do_setup(self, context):
         """Any initialization the volume driver does while starting."""
@@ -122,7 +128,8 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             LOG.error(_("An error occurred while trying to open connection: "
                         "%s") % uri)
             raise
-
+        self.configuration.path_to_key = \
+                    os.path.expanduser(self.configuration.path_to_key)
         self._init_helpers()
 
     def _init_helpers(self):
@@ -275,7 +282,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                 (line[2] == macAddr))]
         max_retries = 3
         if not IPaddr:
-            if retry <= max_retries:
+            if retry < max_retries:
                 LOG.debug("Can't retrieve IP, rebooting domain")
                 self._restart_domain(domain)
                 IPaddr = self._get_domain_ip(domain, retry+1)
@@ -421,7 +428,8 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             return None
 
     def _init_domain(self, domain):
-        pass
+        for helper in self._helpers.values():
+            helper.init_helper(domain.ip, domain.rootfs_path)
 
     @synchronized
     def _get_domain(self, tenant_id, create=True, restart=False):
@@ -430,11 +438,14 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             self.tenants_domains[tenant_id] = \
                     self._setup_domain(tenant_id, create)
             domain = self.tenants_domains[tenant_id]
-            self._init_domain(domain)
+            if domain:
+                self._init_domain(domain)
         if domain:
             dom_state = domain.info()[0]
             if restart or dom_state != libvirt.VIR_DOMAIN_RUNNING:
                 self._restart_domain(domain)
+            for helper in self._helpers.values():
+                helper.setup_helper(domain.ip)
         return domain
 
     def _setup_domain(self, tenant_id, create):
@@ -447,8 +458,6 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         domain.ip = self._get_domain_ip(domain)[0]
         domain.rootfs_path = self._get_lxc_path(tenant_id)
         LOG.debug("Domain %s  IP is %s" % (tenant_id, domain.ip))
-        for helper in self._helpers.values():
-            helper.setup_helper(domain.ip, domain.rootfs_path)
         return domain
 
     def _create_domain(self, xml):
@@ -474,6 +483,12 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                           os.path.join(lxc_path, '..'),
                           run_as_root=True)
         self._try_execute('chmod', '777', lxc_path, run_as_root=True)
+        pub_key = self._execute('cat', self.configuration.path_to_key)[0]
+        self._try_execute('echo', pub_key, '>', os.path.join(lxc_path,
+                          'root/.ssh/autorized_keys'))
+        self._try_execute('chown', 'root:root', '-R',
+                          os.path.join(lxc_path, 'root'),
+                          run_as_root=True)
 
 
 class NASHelperBase(object):
@@ -483,7 +498,10 @@ class NASHelperBase(object):
         self.configuration = config_object
         self._execute = execute
 
-    def setup_helper(self, domain_ip, lxc_path):
+    def init_helper(self, domain_ip, lxc_path):
+        pass
+
+    def setup_helper(self, domain_ip):
         pass
 
     def create_export(self, share_name, domain_ip, recreate=False):
@@ -494,11 +512,11 @@ class NASHelperBase(object):
         """Remove export."""
         raise NotImplementedError()
 
-    def allow_access(self, export_location, share_name, access_type, access):
+    def allow_access(self, domain_ip, share_name, access_type, access):
         """Allow access to the host."""
         raise NotImplementedError()
 
-    def deny_access(self, export_location, share_name, access_type, access,
+    def deny_access(self, domain_ip, share_name, access_type, access,
                     force=False):
         """Deny access to the host."""
         raise NotImplementedError()
@@ -509,13 +527,22 @@ class UNFSHelper(NASHelperBase):
 
     def __init__(self, execute, config_object):
         super(UNFSHelper, self).__init__(execute, config_object)
+    
+    def init_helper(self, domain_ip, lxc_path):
+        try:
+            self._execute('rm', os.path.join(lxc_path, 'etc/exports'),
+                          run_as_root=True)
+        except Exception as e:
+            if 'No such file or directory' not in e.stderr:
+                raise
+        self.setup_helper(domain_ip)
 
-    def setup_helper(self, domain_ip, lxc_path):
+    def setup_helper(self, domain_ip):
         try:
             self._execute('ssh', 'root@%s' % domain_ip,
                           '-o StrictHostKeyChecking=no', 'unfsd')
         except Exception as e:
-            if 'command not found' in str(e):
+            if 'command not found' in e.stderr:
                 raise exception.Exception('UNFS server not found')
 
     def create_export(self, share_name, domain_ip, recreate=False):
@@ -538,7 +565,6 @@ class UNFSHelper(NASHelperBase):
                                         share_name)
         #check if presents in export
         out, _ = self._execute('ssh', 'root@%s' % domain_ip, 'showmount -e')
-        print out
         out = re.search(re.escape(local_share_path) + '[\s\n]*' +
                         re.escape(access), out)
         if out is not None:
@@ -589,26 +615,19 @@ class CIFSHelper(NASHelperBase):
         super(CIFSHelper, self).__init__(execute, config_object)
         self.test_config = "%s_" % (self.configuration.smb_config_path)
 
-    def setup_helper(self, domain_ip, lxc_path):
-        """Initialize environment."""
+    def init_helper(self, domain_ip, lxc_path):
         self.config = os.path.join(lxc_path, 'smb.conf')
         self.local_config_path = '/smb.conf'
         self._execute('cp', '-p', self.configuration.smb_config_path,
                       self.config, run_as_root=True)
         self._execute('chmod', '777', self.config, run_as_root=True)
-        try:
-            self._execute('ssh', 'root@%s' % domain_ip,
-                          '-o StrictHostKeyChecking=no',
-                          'service smbd stop')
-        except Exception as e:
-            if 'Unknown instance' in str(e):
-                LOG.debug('smbd daemon is not running. Starting')
-            else:
-                raise
-        self._execute('ssh', 'root@%s' % domain_ip,
-                '-o StrictHostKeyChecking=no',
-                'smbd -s %s -D' % self.local_config_path)
         self._recreate_config(domain_ip)
+        self.setup_helper(domain_ip)
+
+    def setup_helper(self, domain_ip):
+        """Initialize environment."""
+        self._stop_service(domain_ip)
+        self._start_daemon(domain_ip)
         self._ensure_daemon_started(domain_ip)
 
     def create_export(self, share_name, domain_ip, recreate=False):
@@ -664,10 +683,10 @@ class CIFSHelper(NASHelperBase):
             raise exception.ShareAccessExists(access_type=access_type,
                                               access=access)
         self._execute('ssh', 'root@%s' % domain_ip,
-                      '"chown nobody -R %s"' % local_share_path)
+                      'chown nobody -R %s' % local_share_path)
         hosts += ' %s' % (access,)
         parser.set(share_name, 'hosts allow', hosts)
-        self._update_config(parser)
+        self._update_config(parser, domain_ip)
 
     def deny_access(self, domain_ip, share_name, access_type, access,
                     force=False):
@@ -678,10 +697,24 @@ class CIFSHelper(NASHelperBase):
             hosts = parser.get(share_name, 'hosts allow')
             hosts = hosts.replace(' %s' % (access,), '', 1)
             parser.set(share_name, 'hosts allow', hosts)
-            self._update_config(parser)
+            self._update_config(parser, domain_ip)
         except ConfigParser.NoSectionError:
             if not force:
                 raise
+
+    def _stop_service(self, domain_ip):
+        try:
+            self._execute('ssh', 'root@%s' % domain_ip,
+                          '-o StrictHostKeyChecking=no',
+                          'service smbd stop')
+        except Exception as e:
+            if 'Unknown instance' not in e.stderr:
+                raise
+
+    def _start_daemon(self, domain_ip):
+        self._execute('ssh', 'root@%s' % domain_ip,
+                '-o StrictHostKeyChecking=no',
+                'smbd -s %s -D' % self.local_config_path)
 
     def _ensure_daemon_started(self, domain_ip):
         """
@@ -733,10 +766,6 @@ class CIFSHelper(NASHelperBase):
                               '-o StrictHostKeyChecking=no',
                               'killall -9 smbd')
             except Exception as e:
-                if 'unknown service' in str(e):
-                    LOG.debug('smbd is not running. Starting')
-                else:
+                if 'unknown service' not in e.stderr:
                     raise
-            self._execute('ssh', 'root@%s' % domain_ip,
-                      '-o StrictHostKeyChecking=no',
-                      'smbd -s %s -D' % self.local_config_path)
+            self._start_daemon(domain_ip)
