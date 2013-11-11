@@ -243,22 +243,27 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         """Exports the volume. Can optionally return a Dictionary of changes
         to the share object to be persisted."""
         device_name = self._local_path(share)
-        location = self._mount_device(share, device_name)
+        domain = self._get_domain(share['project_id'])
+        location = self._mount_device(share, device_name, domain)
         #TODO(rushiagr): what is the provider_location? realy needed?
         return {'provider_location': location}
 
     def remove_export(self, ctx, share):
         """Removes an access rules for a share."""
         mount_path = self._get_mount_path(share)
+        device_name = self._local_path(share)
+        domain = self._get_domain(share['project_id'])
         if os.path.exists(mount_path):
             #umount, may be busy
             try:
-                self._execute('umount', '-f', mount_path, run_as_root=True)
-            except exception.ProcessExecutionError, exc:
-                if 'device is busy' in str(exc):
-                    raise exception.ShareIsBusy(share_name=share['name'])
+                xml = self._update_xml(device_name, share['name'],
+                                       domain, 'unmount')
+                self._conn.defineXML(xml)
+            except exception.ManilaException as exc:
+                if 'not mounted' in str(exc):
+                    LOG.warn(_("%s is not mounted"), device_name)
                 else:
-                    LOG.info('Unable to umount: %s', exc)
+                    raise
             #we need this to release mount from lxc
             self._get_domain(share['project_id'], create=False, restart=True)
             #remove dir
@@ -313,8 +318,8 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def ensure_share(self, ctx, share):
         """Ensure that storage are mounted and exported."""
         device_name = self._local_path(share)
-        self._mount_device(share, device_name)
         domain = self._get_domain(share['project_id'])
+        self._mount_device(share, device_name, domain)
         self._get_helper(share).create_export(share['name'], domain.ip,
                                               recreate=True)
 
@@ -360,20 +365,23 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             raise exception.InvalidShare(reason='Wrong share type')
 
-    def _mount_device(self, share, device_name):
+    def _mount_device(self, share, device_name, domain):
         """Mount LVM share and ignore if already mounted."""
         mount_path = self._get_mount_path(share)
         self._execute('mkdir', '-p', mount_path)
         try:
-            self._execute('mount', device_name, mount_path,
-                          run_as_root=True, check_exit_code=True)
-            self._execute('chmod', '777', mount_path,
-                          run_as_root=True, check_exit_code=True)
-        except exception.ProcessExecutionError as exc:
-            if 'already mounted' in exc.stderr:
+            xml = self._update_xml(device_name, share['name'], domain, 'mount')
+            self._conn.defineXML(xml)
+        except exception.ManilaException as exc:
+            if 'already mounted' in str(exc):
                 LOG.warn(_("%s is already mounted"), device_name)
             else:
                 raise
+
+        self._execute('ssh', 'root@%s' % domain.ip,
+                      'chmod 777 %s' %
+                      os.path.join('/', share_path_in_lxc,
+                      share['name']))
         self._get_domain(share['project_id'], restart=True)
         return mount_path
 
@@ -403,7 +411,29 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                       'count=%d' % (size_in_g * 1024), 'bs=1M',
                       *extra_flags, run_as_root=True)
 
-    def _get_xml(self, tenant_id):
+    def _update_xml(self, device_name, share_name, domain, operation):
+        root = etree.fromstring(domain.XMLDesc(0))
+        filesystem = self._get_device_xml(device_name, share_name)
+        temp_fs = []
+        for source in root.iter('source'):
+            if source.get('file') == device_name:
+                temp_fs.append(source.getparent())
+        if operation == 'mount':
+            if temp_fs != []:
+                raise exception.ManilaException("already mounted")
+            else:
+                for dev in root.iter('devices'):
+                    dev.append(filesystem)
+        elif operation == 'unmount':
+            if temp_fs is not None:
+                for fs in temp_fs:
+                    fs.getparent().remove(fs)
+            else:
+                raise exception.ManilaException("Device is not mounted")
+        xml = etree.tostring(root, pretty_print=True)
+        return xml
+
+    def _get_domain_xml(self, tenant_id):
         root = etree.Element('domain', type='lxc')
         etree.SubElement(root, 'name').text = tenant_id
         etree.SubElement(root, 'memory').text = '332768'
@@ -425,12 +455,20 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         etree.SubElement(devices, 'console', type='pty')
         return etree.tostring(root, pretty_print=True)
 
-    def _get_domain_by_name(self, instance_name):
+    def _get_device_xml(self, device_name, share_name):
+        filesystem = etree.Element('filesystem', type='file')
+        etree.SubElement(filesystem, 'driver', type='path')
+        etree.SubElement(filesystem, 'source', file=device_name)
+        etree.SubElement(filesystem, 'target',
+                         dir=os.path.join('/', share_path_in_lxc, share_name))
+        return filesystem 
+
+    def _get_domain_by_name(self, domain_name):
         """Retrieve libvirt domain object given an instance name."""
         try:
-            return self._conn.lookupByName(instance_name)
+            return self._conn.lookupByName(domain_name)
         except libvirt.libvirtError:
-            return None
+            return
 
     @synchronized
     def _get_domain(self, tenant_id, create=True, restart=False):
@@ -450,15 +488,16 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 # init helpers after lxc restart
                 for helper in self._helpers.values():
                     helper.setup_helper(domain.ip)
+
         return domain
 
     def _setup_domain(self, tenant_id, create):
         domain = self._get_domain_by_name(tenant_id)
         if not domain:
             if not create:
-                return None
+                return
             self._create_rootfs_for_domain(tenant_id)
-            domain = self._create_domain(self._get_xml(tenant_id))
+            domain = self._create_domain(self._get_domain_xml(tenant_id))
         domain.ip = self._get_domain_ip(domain)[0]
         domain.rootfs_path = self._get_lxc_path(tenant_id)
         LOG.debug("Domain %s  IP is %s" % (tenant_id, domain.ip))
@@ -475,7 +514,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         except Exception as e:
             LOG.error(_("An error occurred while trying to define a domain"
                         " with xml: %s") % xml)
-            raise e
+            raise
 
         return domain
 
