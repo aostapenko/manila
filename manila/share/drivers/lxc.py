@@ -23,6 +23,7 @@ import ConfigParser
 import libvirt
 import math
 import os
+import paramiko
 import re
 import time
 import threading
@@ -283,7 +284,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         lines = [line.split() for line in output.split("\n")[1:]]
         IPaddr = [line[0] for line in lines if (line and
                                                 (line[2] == macAddr))]
-        IPaddr = ['192.168.100.152', 0]
+        IPaddr = ['192.168.100.131', 0]
         max_retries = 3
         if not IPaddr:
             if retry < max_retries:
@@ -432,6 +433,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             else:
                 for dev in root.iter('devices'):
                     dev.append(filesystem)
+                    break
         elif operation == 'unmount':
             if temp_fs is not None:
                 for fs in temp_fs:
@@ -487,11 +489,12 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             domain = self.tenants_domains[tenant_id]
             if domain:
                 # init helpers on lxc initialization
+                if domain.state(0)[0] != libvirt.VIR_DOMAIN_RUNNING:
+                    self._restart_domain(domain)
                 for helper in self._helpers.values():
                     helper.init_helper(domain.ip, domain.rootfs_path)
         if domain:
-            dom_state = domain.info()[0]
-            if restart or dom_state != libvirt.VIR_DOMAIN_RUNNING:
+            if restart or domain.state(0)[0] != libvirt.VIR_DOMAIN_RUNNING:
                 self._restart_domain(domain)
                 # init helpers after lxc restart
                 for helper in self._helpers.values():
@@ -519,7 +522,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             #waiting while domain starts and retrieves IP
             time.sleep(60)
 
-        except Exception as e:
+        except Exception:
             LOG.error(_("An error occurred while trying to define a domain"
                         " with xml: %s") % xml)
             raise
