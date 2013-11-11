@@ -113,7 +113,8 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             msg = (_("share_export_ip doesn't specified"))
             raise exception.InvalidParameterValue(err=msg)
         if not os.path.exists(self.configuration.path_to_key):
-            msg = (_("Hosts paublic key does not exist"))
+            msg = (_("Hosts public key %s does not exist" %
+                     self.configuration.path_to_key))
             raise exception.InvalidParameterValue(err=msg)
 
     def do_setup(self, context):
