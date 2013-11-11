@@ -283,6 +283,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         lines = [line.split() for line in output.split("\n")[1:]]
         IPaddr = [line[0] for line in lines if (line and
                                                 (line[2] == macAddr))]
+        IPaddr = ['192.168.100.152', 0]
         max_retries = 3
         if not IPaddr:
             if retry < max_retries:
@@ -296,6 +297,12 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def _restart_domain(self, domain):
         LOG.debug('Rebooting domain %s' % domain.name())
         if domain.info()[0] == libvirt.VIR_DOMAIN_RUNNING:
+            try:
+                self._execute('ssh', 'root@%s' % domain.ip,
+                              'poweroff')
+                time.sleep(2)
+            except:
+                pass
             domain.destroy()
         domain.create()
         #waiting while domain starts and retrieve IP
@@ -379,11 +386,11 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             else:
                 raise
 
+        self._get_domain(share['project_id'], restart=True)
         self._execute('ssh', 'root@%s' % domain.ip,
                       'chmod 777 %s' %
                       os.path.join('/', share_path_in_lxc,
                       share['name']))
-        self._get_domain(share['project_id'], restart=True)
         return mount_path
 
     def _get_mount_path(self, share):
