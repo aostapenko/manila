@@ -19,6 +19,7 @@ LXC Driver for shares.
 
 """
 
+import ipaddress
 import ConfigParser
 import libvirt
 import math
@@ -77,6 +78,8 @@ CONF.register_opts(share_opts)
 
 uri = 'lxc:///'
 share_path_in_lxc = 'shares'
+service_network_name = 'service'
+service_network_cidr = u'192.168.100.0/24'
 
 
 def _get_share_path_in_lxc(share_name):
@@ -99,6 +102,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         """Do initialization."""
         super(LXCShareDriver, self).__init__(*args, **kwargs)
         self.tenants_domains = {}
+        self.macs_ips = {}
         self.tenants_locks = {}
         self.db = db
         self._helpers = None
@@ -130,9 +134,62 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             LOG.error(_("An error occurred while trying to open connection: "
                         "%s") % uri)
             raise
+        self.service_network = self._init_service_network()
+        self._retrieve_used_mac_ip_pairs()
         self.configuration.path_to_key = \
                     os.path.expanduser(self.configuration.path_to_key)
         self._init_helpers()
+
+    def _init_service_network(self):
+        network = None
+        try:
+            network = self._conn.networkLookupByName(service_network_name)
+            network.create()
+        except Exception as e:
+            LOG.debug(str(e))
+        if network is None:
+            network = self._conn.networkDefineXML(self._get_service_net_xml())
+            network.create()
+        return network
+
+    def _retrieve_used_mac_ip_pairs(self):
+        root = etree.fromstring(self.service_network.XMLDesc(0))
+        for host in root.iter('host'):
+            self.macs_ips[host.get('mac')] = host.get('ip')
+
+    def _get_service_net_xml(self):
+        serv_net = ipaddress.ip_network(service_network_cidr)
+
+        network = etree.Element('network')
+        etree.SubElement(network, 'name').text = service_network_name
+        forward = etree.SubElement(network, 'forward', dev='eth0', mode='nat')
+        etree.SubElement(forward, 'interface', dev='eth0')
+        etree.SubElement(network, 'bridge', name='servbr0', stp='on',delay='0')
+        # hosts method returns generator, so we need next() to get 1st value
+        ip = etree.SubElement(network, 'ip',
+                              address=str(serv_net.hosts().next()),
+                              netmask=str(serv_net.netmask))
+        dhcp = etree.SubElement(ip, 'dhcp')
+        etree.SubElement(dhcp, 'range', start='192.168.100.100',
+                         end='192.168.100.254')
+        return etree.tostring(network, pretty_print=True)
+
+    def _inject_mac_ip_pair(self, mac, ip):
+        root = etree.fromstring(self.service_network.XMLDesc(0))
+        for host in root.iter('host'):
+            if host.get('mac') == mac:
+                LOG.warning(('ip %s is already assigned to mac address %s.'
+                             'Reassigning') % (host.get('ip'), mac))
+                host.set('ip', ip)
+                break
+        else:
+            etree.SubElement(root.find('ip').find('dhcp'),
+                             'host', mac=mac, ip=ip)
+        self._conn.networkDefineXML(etree.tostring(root))
+        self.service_network.destroy()
+        LOG.debug(etree.tostring(root, pretty_print=True))
+        self.service_network.create()
+
 
     def _init_helpers(self):
         """Initializes protocol-specific NAS drivers."""
@@ -261,8 +318,8 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         """Removes an access rules for a share."""
         mount_path = self._get_mount_path(share)
         device_name = self._local_path(share)
-        domain = self._get_domain(share['project_id'])
-        if os.path.exists(mount_path):
+        domain = self._get_domain(share['project_id'], create=False)
+        if os.path.exists(mount_path) and domain:
             #umount, may be busy
             try:
                 xml = self._update_xml(device_name, share['name'],
@@ -281,26 +338,31 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             except OSError:
                 LOG.info('Unable to delete %s', mount_path)
 
-    def _get_domain_ip(self, domain, retry=0):
+    def _get_domain_ip(self, domain):
         """Recieves domain ip"""
         desc = etree.fromstring(domain.XMLDesc(0))
-        macAddr = desc.find("devices/interface[@type='network']/mac").\
+        mac = desc.find("devices/interface[@type='network']/mac").\
                 attrib["address"].lower().strip()
+        if self.macs_ips.get(mac) is not None:
+            return self.macs_ips[mac]
 
-        output = self._execute('arp', '-n')[0]
-        lines = [line.split() for line in output.split("\n")[1:]]
-        IPaddr = [line[0] for line in lines if (line and
-                                                (line[2] == macAddr))]
-        IPaddr = ['192.168.100.131', 0]
-        max_retries = 3
-        if not IPaddr:
-            if retry < max_retries:
-                LOG.debug("Can't retrieve IP, rebooting domain")
-                self._restart_domain(domain)
-                IPaddr = self._get_domain_ip(domain, retry + 1)
-            else:
-                raise exception.ManilaException("Can't get container IP")
-        return IPaddr
+        serv_net = ipaddress.ip_network(service_network_cidr)
+        ip_to_assign = None
+        # excluding 1st element from search
+        hosts = serv_net.hosts()
+        hosts.next()
+        for host in hosts:
+            ip = str(host)
+            if ip not in self.macs_ips.values():
+               ip_to_assign = ip
+               break
+        if ip_to_assign is not None:
+            self._inject_mac_ip_pair(mac, ip_to_assign)
+            self.macs_ips[mac] = ip_to_assign
+            return ip_to_assign
+        else:
+            raise Exception("Something is wrong with free ip searching")
+
 
     def _restart_domain(self, domain):
         LOG.debug('Rebooting domain %s' % domain.name())
@@ -465,7 +527,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                          dir=self._get_lxc_path(tenant_id))
         etree.SubElement(filesystem, 'target', dir='/')
         interface = etree.SubElement(devices, 'interface', type='network')
-        etree.SubElement(interface, 'source', network='service')
+        etree.SubElement(interface, 'source', network=service_network_name)
         etree.SubElement(devices, 'console', type='pty')
         return etree.tostring(root, pretty_print=True)
 
@@ -513,7 +575,8 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 return
             self._create_rootfs_for_domain(tenant_id)
             domain = self._create_domain(self._get_domain_xml(tenant_id))
-        domain.ip = self._get_domain_ip(domain)[0]
+        domain.ip = self._get_domain_ip(domain)
+        self._restart_domain(domain)
         domain.rootfs_path = self._get_lxc_path(tenant_id)
         LOG.debug("Domain %s  IP is %s" % (tenant_id, domain.ip))
         return domain
