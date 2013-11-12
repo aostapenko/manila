@@ -168,12 +168,9 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         etree.SubElement(network, 'bridge', name='servbr0',
                          stp='on', delay='0')
         # hosts method returns generator, so we need next() to get 1st value
-        ip = etree.SubElement(network, 'ip',
-                              address=str(serv_net.hosts().next()),
-                              netmask=str(serv_net.netmask))
-        dhcp = etree.SubElement(ip, 'dhcp')
-        etree.SubElement(dhcp, 'range', start='192.168.100.100',
-                         end='192.168.100.254')
+        etree.SubElement(network, 'ip',
+                         address=str(serv_net.hosts().next()),
+                         netmask=str(serv_net.netmask))
         return etree.tostring(network, pretty_print=True)
 
     def _inject_mac_ip_pair(self, mac, ip):
@@ -185,8 +182,10 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 host.set('ip', ip)
                 break
         else:
-            etree.SubElement(root.find('ip').find('dhcp'),
-                             'host', mac=mac, ip=ip)
+            dhcp = root.find('ip').find('dhcp')
+            if dhcp is None:
+                dhcp = etree.SubElement(root.find('ip'), 'dhcp')
+            etree.SubElement(dhcp, 'host', mac=mac, ip=ip)
         self._conn.networkDefineXML(etree.tostring(root))
         self.service_network.destroy()
         self.service_network.create()
@@ -319,7 +318,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         mount_path = self._get_mount_path(share)
         device_name = self._local_path(share)
         domain = self._get_domain(share['project_id'], create=False)
-        if os.path.exists(mount_path) and domain:
+        if os.path.exists(mount_path) and domain is not None:
             #umount, may be busy
             try:
                 xml = self._update_xml(device_name, share['name'],
@@ -583,19 +582,18 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             if not create:
                 return
             self._create_rootfs_for_domain(tenant_id)
-            domain = self._create_domain(self._get_domain_xml(tenant_id))
+            domain = self._define_domain(self._get_domain_xml(tenant_id))
         domain.ip = self._get_domain_ip(domain)
         self._restart_domain(domain)
         domain.rootfs_path = self._get_lxc_path(tenant_id)
         LOG.debug("Domain %s  IP is %s" % (tenant_id, domain.ip))
         return domain
 
-    def _create_domain(self, xml):
-        """Creates a persistent domain."""
+    def _define_domain(self, xml):
+        """Defines a persistent domain."""
         try:
+            # domain will not be started here
             domain = self._conn.defineXML(xml)
-            # starting domain
-            self._restart_domain(domain)
         except Exception:
             LOG.error(_("An error occurred while trying to define a domain"
                         " with xml: %s") % xml)
