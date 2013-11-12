@@ -25,6 +25,7 @@ import libvirt
 import math
 import os
 import re
+import socket
 import time
 import threading
 
@@ -164,7 +165,8 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         etree.SubElement(network, 'name').text = service_network_name
         forward = etree.SubElement(network, 'forward', dev='eth0', mode='nat')
         etree.SubElement(forward, 'interface', dev='eth0')
-        etree.SubElement(network, 'bridge', name='servbr0', stp='on',delay='0')
+        etree.SubElement(network, 'bridge', name='servbr0',
+                         stp='on', delay='0')
         # hosts method returns generator, so we need next() to get 1st value
         ip = etree.SubElement(network, 'ip',
                               address=str(serv_net.hosts().next()),
@@ -187,9 +189,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                              'host', mac=mac, ip=ip)
         self._conn.networkDefineXML(etree.tostring(root))
         self.service_network.destroy()
-        LOG.debug(etree.tostring(root, pretty_print=True))
         self.service_network.create()
-
 
     def _init_helpers(self):
         """Initializes protocol-specific NAS drivers."""
@@ -354,8 +354,8 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         for host in hosts:
             ip = str(host)
             if ip not in self.macs_ips.values():
-               ip_to_assign = ip
-               break
+                ip_to_assign = ip
+                break
         if ip_to_assign is not None:
             self._inject_mac_ip_pair(mac, ip_to_assign)
             self.macs_ips[mac] = ip_to_assign
@@ -363,19 +363,28 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             raise Exception("Something is wrong with free ip searching")
 
-
     def _restart_domain(self, domain):
         LOG.debug('Rebooting domain %s' % domain.name())
         if domain.info()[0] == libvirt.VIR_DOMAIN_RUNNING:
             try:
                 self._ssh_run(domain.ip, 'poweroff')
                 time.sleep(2)
-            except:
-                pass
+            except Exception as e:
+                LOG.warning(e)
             domain.destroy()
         domain.create()
-        #waiting while domain starts and retrieve IP
-        time.sleep(5)
+        #waiting while domain starts and retrieve IP, but not more than 30 sec
+        t = time.time()
+        while time.time() - t < 30:
+            try:
+                socket.socket().connect((domain.ip, 22))
+                LOG .debug("SSH on %s is availiable in %s seconds" %
+                           (domain.name(), time.time() - t))
+                return
+            except socket.error:
+                time.sleep(0.1)
+        raise exception.ManilaException("Can't connect to domain %s"
+                                        "after restart" % domain.name())
 
     def create_share(self, ctx, share):
         """Is called after allocate_space to create share on the volume."""
@@ -585,10 +594,8 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         """Creates a persistent domain."""
         try:
             domain = self._conn.defineXML(xml)
-            domain.create()
-            #waiting while domain starts and retrieves IP
-            time.sleep(60)
-
+            # starting domain
+            self._restart_domain(domain)
         except Exception:
             LOG.error(_("An error occurred while trying to define a domain"
                         " with xml: %s") % xml)
