@@ -146,7 +146,8 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                         self.configuration)
 
     def _ssh_run(self, host, command):
-        return self._execute('ssh', 'root@%s' % host, command)
+        return self._execute('ssh', 'root@%s' % host,
+                             '-o StrictHostKeyChecking=no', command)
 
     def _local_path(self, share):
         # NOTE(vish): stops deprecation warning
@@ -556,9 +557,8 @@ class NASHelperBase(object):
         self._execute = execute
 
     def _ssh_run(self, host, command):
-        output = self._execute('ssh', 'root@%s' % host, command)
-        # returns file-like objects
-        return output
+        return self._execute('ssh', 'root@%s' % host,
+                             '-o StrictHostKeyChecking=no', command)
 
     def init_helper(self, domain_ip, lxc_path):
         pass
