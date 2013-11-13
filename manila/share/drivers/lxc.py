@@ -740,7 +740,11 @@ class UNFSHelper(NASHelperBase):
     def _restart_unfs(self, domain_ip):
         """Restarts unfsd.
         unfsd can't be restarted more civilized way"""
-        self._ssh_run(domain_ip, 'killall -9 unfsd')
+        try:
+            self._ssh_run(domain_ip, 'killall -9 unfsd')
+        except Exception as e:
+            if 'no process found' in str(e):
+                LOG.debug(e)
         self._ssh_run(domain_ip, 'unfsd')
 
 
