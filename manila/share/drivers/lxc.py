@@ -314,7 +314,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return {'provider_location': location}
 
     def remove_export(self, ctx, share):
-        """Removes an access rules for a share."""
+        """Removes mount from lxc."""
         mount_path = self._get_mount_path(share)
         device_name = self._local_path(share)
         domain = self._get_domain(share['project_id'], create=False)
@@ -367,7 +367,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if domain.info()[0] == libvirt.VIR_DOMAIN_RUNNING:
             try:
                 self._ssh_run(domain.ip, 'poweroff')
-                time.sleep(2)
+                time.sleep(3)
             except Exception as e:
                 LOG.warning(e)
             domain.destroy()
@@ -409,7 +409,7 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                               recreate=True)
 
     def delete_share(self, ctx, share):
-        """Delete a share."""
+        """Removes an access rules for a share."""
         try:
             domain = self._get_domain(share['project_id'], create=False)
             if not domain:
@@ -557,6 +557,9 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     @synchronized
     def _get_domain(self, tenant_id, create=True, restart=False):
         domain = self.tenants_domains.get(tenant_id)
+        #checks if domain really exists
+        domain = self._check_domain(domain)
+
         if domain is None:
             self.tenants_domains[tenant_id] = \
                     self._setup_domain(tenant_id, create)
@@ -575,10 +578,17 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                     helper.setup_helper(domain.ip)
 
         return domain
+    
+    def _check_domain(self, domain):
+        if domain is not None:
+            if self._get_domain_by_name(domain.name()) is None:
+                return
+            else:
+                return domain
 
     def _setup_domain(self, tenant_id, create):
         domain = self._get_domain_by_name(tenant_id)
-        if not domain:
+        if domain is None:
             if not create:
                 return
             self._create_rootfs_for_domain(tenant_id)
