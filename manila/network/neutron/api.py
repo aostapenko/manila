@@ -100,7 +100,7 @@ class API(base.Base):
         nets = self.client.list_networks(**search_opts).get('networks', [])
         return nets
 
-    def create_port(self, tenant_id, network_id, host_id, fixed_ip=None,
+    def create_port(self, tenant_id, network_id, fixed_ip=None,
                     security_groups_ids=None, mac_address=None,
                     dhcp_opts=None):
         try:
@@ -110,12 +110,10 @@ class API(base.Base):
             port_req_body['port']['tenant_id'] = tenant_id
             if fixed_ip:
                 port_req_body['port']['fixed_ips'] = [{'ip_address': fixed_ip}]
-            if security_group_ids:
-                port_req_body['port']['security_groups'] = security_group_ids
+            if security_groups_ids:
+                port_req_body['port']['security_groups'] = security_groups_ids
             if mac_address:
                 port_req_body['port']['mac_address'] = mac_address
-            if self._has_port_binding_extension():
-                port_req_body['port']['binding:host_id'] = host_id
             if dhcp_opts is not None:
                 port_req_body['port']['extra_dhcp_opts'] = dhcp_opts
             port = self.client.create_port(port_req_body)
