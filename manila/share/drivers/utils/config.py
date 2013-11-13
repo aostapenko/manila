@@ -68,44 +68,7 @@ class LibvirtConfigObject(object):
     def to_xml(self, pretty_print=True):
         root = self.format_dom()
         xml_str = etree.tostring(root, pretty_print=pretty_print)
-        LOG.debug(_("Generated XML %s "), (xml_str,))
         return xml_str
-
-
-class LibvirtConfigGuestClock(LibvirtConfigObject):
-
-    def __init__(self, **kwargs):
-        super(LibvirtConfigGuestClock, self).__init__(root_name="clock",
-                                                      **kwargs)
-        self.offset = "utc"
-
-    def format_dom(self):
-        clk = super(LibvirtConfigGuestClock, self).format_dom()
-        clk.set("offset", self.offset)
-        return clk
-
-
-class LibvirtConfigCPU(LibvirtConfigObject):
-
-    def __init__(self, **kwargs):
-        super(LibvirtConfigCPU, self).__init__(root_name='cpu',
-                                               **kwargs)
-        self.arch = None
-
-    def parse_dom(self, xmldoc):
-        super(LibvirtConfigCPU, self).parse_dom(xmldoc)
-
-        for c in xmldoc.getchildren():
-            if c.tag == "arch":
-                self.arch = c.text
-
-    def format_dom(self):
-        cpu = super(LibvirtConfigCPU, self).format_dom()
-
-        if self.arch is not None:
-            cpu.append(self._text_node("arch", self.arch))
-
-        return cpu
 
 
 class LibvirtConfigGuestDevice(LibvirtConfigObject):
@@ -139,6 +102,20 @@ class LibvirtConfigGuestFilesys(LibvirtConfigGuestDevice):
 
         return dev
 
+    def parse_dom(self, xmldoc):
+        super(LibvirtConfigGuestFilesys, self).parse_dom(xmldoc)
+
+        self.source_type = xmldoc.get('type')
+        for child in xmldoc.getchildren():
+            if child.tag == 'source':
+                if self.source_type == "mount":
+                    self.source_dir = child.get('dir')
+                elif self.source_type == "file":
+                    self.source_dir = child.get('file')
+            if child.tag == 'target':
+                self.target_dir = child.get('dir')
+            if child.tag == 'driver':
+                self.driver = child.get('type')
 
 class LibvirtConfigGuestInterface(LibvirtConfigGuestDevice):
 
@@ -170,7 +147,8 @@ class LibvirtConfigGuestInterface(LibvirtConfigGuestDevice):
         dev = super(LibvirtConfigGuestInterface, self).format_dom()
 
         dev.set("type", self.net_type)
-        dev.append(etree.Element("mac", address=self.mac_addr))
+        if self.mac_addr:
+            dev.append(etree.Element("mac", address=self.mac_addr))
         if self.model:
             dev.append(etree.Element("model", type=self.model))
 
@@ -183,6 +161,8 @@ class LibvirtConfigGuestInterface(LibvirtConfigGuestDevice):
         elif self.net_type == "direct":
             dev.append(etree.Element("source", dev=self.source_dev,
                                      mode=self.source_mode))
+        elif self.net_type == "network":
+            dev.append(etree.Element("source", network=self.source_dev))
         else:
             dev.append(etree.Element("source", bridge=self.source_dev))
 
@@ -228,6 +208,18 @@ class LibvirtConfigGuestInterface(LibvirtConfigGuestDevice):
 
         return dev
 
+    def parse_dom(self, xmldoc):
+        self.net_type = xmldoc.get('type')
+        for c in xmldoc.getchildren():
+            if c.tag == 'source':
+                if self.net_type == 'network':
+                    self.source_dev = c.get('network')
+            if c.tag == 'mac':
+                self.mac_addr = c.get('address')
+            if c.tag == 'target':
+                self.target_dev = c.get('dev')
+
+
     def add_filter_param(self, key, value):
         self.filterparams.append({'key': key, 'value': value})
 
@@ -244,10 +236,13 @@ class LibvirtConfigGuestCharBase(LibvirtConfigGuestDevice):
 
     def format_dom(self):
         dev = super(LibvirtConfigGuestCharBase, self).format_dom()
-
         dev.set("type", self.type)
-
         return dev
+
+    def parse_dom(self, xmldoc):
+        super(LibvirtConfigGuestCharBase, self).parse_dom(xmldoc)
+        self.type = xmldoc.get('type')
+
 
 
 class LibvirtConfigGuestChar(LibvirtConfigGuestCharBase):
@@ -278,13 +273,13 @@ class LibvirtConfigGuest(LibvirtConfigObject):
         self.name = None
         self.memory = 1024 * 1024 * 500
         self.vcpus = 1
-        self.clock = None
         self.os_type = None
         self.os_init_path = None
         self.devices = []
 
     def _format_basic_props(self, root):
-        root.append(self._text_node("uuid", self.uuid))
+        if self.uuid:
+            root.append(self._text_node("uuid", self.uuid))
         root.append(self._text_node("name", self.name))
         root.append(self._text_node("memory", self.memory))
         root.append(self._text_node("vcpu", self.vcpus))
@@ -295,8 +290,6 @@ class LibvirtConfigGuest(LibvirtConfigObject):
         if self.os_init_path is not None:
             os.append(self._text_node("init", self.os_init_path))
 
-        if self.os_smbios is not None:
-            os.append(self.os_smbios.format_dom())
         root.append(os)
 
     def _format_devices(self, root):
@@ -309,30 +302,17 @@ class LibvirtConfigGuest(LibvirtConfigObject):
 
     def format_dom(self):
         root = super(LibvirtConfigGuest, self).format_dom()
-
         root.set("type", self.virt_type)
-
         self._format_basic_props(root)
-
-        if self.sysinfo is not None:
-            root.append(self.sysinfo.format_dom())
-
         self._format_os(root)
-        self._format_features(root)
-        self._format_cputune(root)
-
-        if self.clock is not None:
-            root.append(self.clock.format_dom())
-
-        if self.cpu is not None:
-            root.append(self.cpu.format_dom())
-
         self._format_devices(root)
-
         return root
 
     def parse_dom(self, xmldoc):
+        self.virt_type = xmldoc.get('type')
         for c in xmldoc.getchildren():
+            if c.tag in ('uuid', 'name', 'memory', 'vcpu'):
+                setattr(self, c.tag, c.text)
             if c.tag == 'devices':
                 for d in c.getchildren():
                     if d.tag == 'filesystem':
@@ -343,9 +323,16 @@ class LibvirtConfigGuest(LibvirtConfigObject):
                         obj = LibvirtConfigGuestInterface()
                         obj.parse_dom(d)
                         self.devices.append(obj)
+                    elif d.tag == 'console':
+                        obj = LibvirtConfigGuestConsole()
+                        obj.parse_dom(d)
+                        self.devices.append(obj)
+            if c.tag == 'os':
+                for o in c.getchildren():
+                    if o.tag == 'type':
+                        self.os_type = o.text
+                    if o.tag == 'init':
+                        self.os_init_path = o.text
 
     def add_device(self, dev):
         self.devices.append(dev)
-
-    def set_clock(self, clk):
-        self.clock = clk

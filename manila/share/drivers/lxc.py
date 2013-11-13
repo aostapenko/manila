@@ -36,6 +36,7 @@ from manila.openstack.common import fileutils
 from manila.openstack.common import importutils
 from manila.openstack.common import log as logging
 from manila.share import driver
+from manila.share.drivers.utils import config as vconfig
 from manila import utils
 
 from oslo.config import cfg
@@ -508,56 +509,63 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                       *extra_flags, run_as_root=True)
 
     def _update_xml(self, device_name, share_name, domain, operation):
-        root = etree.fromstring(domain.XMLDesc(0))
-        filesystem = self._get_device_xml(device_name, share_name)
-        temp_fs = []
-        for source in root.iter('source'):
-            if source.get('file') == device_name:
-                temp_fs.append(source.getparent())
+        root = vconfig.LibvirtConfigGuest()
+        root.parse_str(domain.XMLDesc(0))
+
+        filesystem = self._get_fs_xml(device_name, share_name)
+        temp_fs = set() 
+        for dev in root.devices:
+            if dev.root_name == 'filesystem':
+                if dev.source_dir == device_name:
+                    temp_fs.add(dev)
         if operation == 'mount':
-            if temp_fs != []:
+            if temp_fs != set():
                 raise exception.ManilaException("already mounted")
             else:
-                for dev in root.iter('devices'):
-                    dev.append(filesystem)
-                    break
+                root.add_device(filesystem)
         elif operation == 'unmount':
             if temp_fs is not None:
-                for fs in temp_fs:
-                    fs.getparent().remove(fs)
+                root.devices = list(set(root.devices) - temp_fs)
             else:
                 raise exception.ManilaException("Device is not mounted")
-        xml = etree.tostring(root, pretty_print=True)
-        return xml
+        LOG.debug(root.to_xml())
+        return root.to_xml()
 
     def _get_domain_xml(self, tenant_id):
-        root = etree.Element('domain', type='lxc')
-        etree.SubElement(root, 'name').text = tenant_id
-        etree.SubElement(root, 'memory').text = '332768'
-        os = etree.SubElement(root, 'os')
-        etree.SubElement(os, 'type').text = 'exe'
-        etree.SubElement(os, 'init').text = '/sbin/init'
-        etree.SubElement(root, 'vcpu').text = '1'
-        etree.SubElement(root, 'clock', offset='utc')
-        etree.SubElement(root, 'on_poweroff').text = 'destroy'
-        etree.SubElement(root, 'on_reboot').text = 'restart'
-        etree.SubElement(root, 'on_crash').text = 'destroy'
-        devices = etree.SubElement(root, 'devices')
-        filesystem = etree.SubElement(devices, 'filesystem', type='mount')
-        etree.SubElement(filesystem, 'source',
-                         dir=self._get_lxc_path(tenant_id))
-        etree.SubElement(filesystem, 'target', dir='/')
-        interface = etree.SubElement(devices, 'interface', type='network')
-        etree.SubElement(interface, 'source', network=service_network_name)
-        etree.SubElement(devices, 'console', type='pty')
-        return etree.tostring(root, pretty_print=True)
+        domain = vconfig.LibvirtConfigGuest()
+        domain.virt_type = 'lxc'
+        domain.name = tenant_id 
+        domain.memory = 332768
+        domain.vcpus = 1 
+        domain.os_type = 'exe'
+        domain.os_init_path = '/sbin/init'
 
-    def _get_device_xml(self, device_name, share_name):
-        filesystem = etree.Element('filesystem', type='file')
-        etree.SubElement(filesystem, 'driver', type='path')
-        etree.SubElement(filesystem, 'source', file=device_name)
-        etree.SubElement(filesystem, 'target',
-                         dir=_get_share_path_in_lxc(share_name))
+        root_filesystem = vconfig.LibvirtConfigGuestFilesys()
+        root_filesystem.source_type = 'mount'
+        root_filesystem.driver = 'path'
+        root_filesystem.source_dir = self._get_lxc_path(tenant_id)
+        root_filesystem.target_dir = '/'
+
+        service_if = vconfig.LibvirtConfigGuestInterface()
+        service_if.net_type = 'network' 
+        service_if.source_dev = service_network_name 
+
+        console = vconfig.LibvirtConfigGuestConsole()
+        console.type = 'pty'
+
+        domain.add_device(root_filesystem)
+        domain.add_device(service_if)
+        domain.add_device(console)
+
+        return domain.to_xml()
+
+    def _get_fs_xml(self, device_name, share_name):
+        filesystem = vconfig.LibvirtConfigGuestFilesys()
+        filesystem.source_type = 'file'
+        filesystem.driver = 'path'
+        filesystem.source_dir = device_name
+        filesystem.target_dir = _get_share_path_in_lxc(share_name)
+
         return filesystem
 
     def _get_domain_by_name(self, domain_name):
@@ -627,10 +635,10 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def _create_rootfs_for_domain(self, tenant_id):
         """Create a rootfs for domain from template."""
         lxc_path = self._get_lxc_path(tenant_id)
-        self._try_execute('mkdir', '-p', lxc_path)
-        self._try_execute('cp', '-rp', CONF.template_rootfs_path,
-                          os.path.join(lxc_path, '..'),
-                          run_as_root=True)
+#        self._try_execute('mkdir', '-p', lxc_path)
+#        self._try_execute('cp', '-rp', CONF.template_rootfs_path,
+#                          os.path.join(lxc_path, '..'),
+#                          run_as_root=True)
         self._try_execute('chmod', '777', lxc_path, run_as_root=True)
         pub_key = self._execute('cat', self.configuration.path_to_key)[0]
         self._try_execute('echo', pub_key, '>', os.path.join(lxc_path,
