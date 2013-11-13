@@ -34,3 +34,6 @@ smbcontrol: CommandFilter, /usr/bin/smbcontrol, root
 # manila/share/drivers/lvm.py: 'net', 'conf', 'setparm', '%s', '%s', '%s'
 # manila/share/drivers/lvm.py: 'net', 'conf', 'getparm', '%s', 'hosts allow'
 net: CommandFilter, /usr/bin/net, root
+
+# manila/share/drivers/lxc.py: 'cp', '-rp', '%s', '%s'
+cp: CommandFilter, cp, root
