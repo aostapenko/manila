@@ -433,20 +433,26 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def allow_access(self, ctx, share, access):
         """Allow access to the share."""
         domain = self._get_domain(share['project_id'])
-        self._get_helper(share).allow_access(domain.ip,
-                                             share['name'],
-                                             access['access_type'],
-                                             access['access_to'])
+        lock = self.tenants_locks.setdefault(share['project_id'],
+                                             threading.RLock())
+        with lock:
+            self._get_helper(share).allow_access(domain.ip,
+                                                 share['name'],
+                                                 access['access_type'],
+                                                 access['access_to'])
 
     def deny_access(self, ctx, share, access):
         """Allow access to the share."""
         domain = self._get_domain(share['project_id'], create=False)
         if not domain:
             return None
-        self._get_helper(share).deny_access(domain.ip,
-                                            share['name'],
-                                            access['access_type'],
-                                            access['access_to'])
+        lock = self.tenants_locks.setdefault(share['project_id'],
+                                             threading.RLock())
+        with lock:
+            self._get_helper(share).deny_access(domain.ip,
+                                                share['name'],
+                                                access['access_type'],
+                                                access['access_to'])
 
     def _get_helper(self, share):
         if share['share_proto'].startswith('NFS'):
