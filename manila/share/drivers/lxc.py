@@ -370,7 +370,13 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 time.sleep(3)
             except Exception as e:
                 LOG.warning(e)
-            domain.destroy()
+            while domain.info()[0] == libvirt.VIR_DOMAIN_RUNNING: 
+                try:
+                    domain.destroy()
+                    break
+                except Exception as e:
+                    time.sleep(0.1)
+
         domain.create()
         #waiting while domain starts and retrieve IP, but not more than 30 sec
         t = time.time()
@@ -462,10 +468,11 @@ class LXCShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 LOG.warn(_("%s is already mounted"), device_name)
             else:
                 raise
+        else:
+            self._get_domain(share['project_id'], restart=True)
 
-        self._get_domain(share['project_id'], restart=True)
         self._ssh_run(domain.ip, 'chmod 777 %s' %
-                           _get_share_path_in_lxc(share['name']))
+                      _get_share_path_in_lxc(share['name']))
         return mount_path
 
     def _get_mount_path(self, share):
