@@ -681,7 +681,7 @@ class UNFSHelper(NASHelperBase):
             self._execute('rm', os.path.join(lxc_path, 'etc/exports'),
                           run_as_root=True)
         except Exception as e:
-            if 'No such file or directory' not in e.stderr:
+            if 'No such file or directory' not in str(e):
                 raise
         self.setup_helper(domain_ip)
 
@@ -690,7 +690,7 @@ class UNFSHelper(NASHelperBase):
         try:
             self._ssh_run(domain_ip, 'unfsd')
         except Exception as e:
-            if 'command not found' in e.stderr:
+            if 'command not found' in str(e):
                 raise exception.Exception('UNFS server not found')
 
     def create_export(self, share_name, domain_ip, recreate=False):
