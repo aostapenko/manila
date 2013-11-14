@@ -212,8 +212,8 @@ class LibvirtConfigGuestInterface(LibvirtConfigGuestDevice):
         self.net_type = xmldoc.get('type')
         for c in xmldoc.getchildren():
             if c.tag == 'source':
-                if self.net_type == 'network':
-                    self.source_dev = c.get('network')
+                if self.net_type in ('network', 'bridge'):
+                    self.source_dev = c.get(self.net_type)
             if c.tag == 'mac':
                 self.mac_addr = c.get('address')
             if c.tag == 'target':
