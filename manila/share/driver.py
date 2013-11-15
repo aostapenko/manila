@@ -150,6 +150,10 @@ class ShareDriver(object):
         """Any initialization the share driver does while starting."""
         pass
 
+    def setup_network(self, context, share, ports):
+        """Setup network for share exporting."""
+        pass
+
     def get_share_stats(self, refresh=False):
         """Get share status.
 

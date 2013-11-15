@@ -23,8 +23,11 @@
 """
 
 from manila import context
+from manila import db
 from manila import exception
 from manila import manager
+from manila import network
+
 from manila.openstack.common import excutils
 from manila.openstack.common import importutils
 from manila.openstack.common import log as logging
@@ -65,6 +68,7 @@ class ShareManager(manager.SchedulerDependentManager):
                         share_driver,
                         self.db,
                         configuration=self.configuration)
+        self.network_api = network.API()
 
     def init_host(self):
         """Initialization for a standalone service."""
@@ -77,6 +81,9 @@ class ShareManager(manager.SchedulerDependentManager):
         LOG.debug(_("Re-exporting %s shares"), len(shares))
         for share in shares:
             if share['status'] in ['available', 'in-use']:
+                ports = self._allocate_network(ctxt, share)
+                self.driver.setup_network(ctxt, share, ports)
+
                 self.driver.ensure_share(ctxt, share)
                 rules = self.db.share_access_get_all_for_share(ctxt,
                                                                share['id'])
@@ -92,6 +99,40 @@ class ShareManager(manager.SchedulerDependentManager):
 
         self.publish_service_capabilities(ctxt)
 
+    def _allocate_network(self, context, share):
+        ports = []
+
+        for subnet in share['subnets']:
+            if subnet.state == 'error':
+                continue
+            if subnet.port_id is None:
+                try:
+                    port = self.network_api.\
+                                create_port(share['project_id'],
+                                    network_id=subnet.net_id,
+                                    subnet_id=subnet.id,
+                                    fixed_ip=subnet.fixed_ip,
+                                    mac_address=subnet.mac_address,
+                                    device_owner='manila')
+                except exception.NetworkException:
+                    db.subnet_update(context, {'subnet_id': subnet.id,
+                                      'state': 'error'})
+                    raise
+                else:
+                    db.subnet_update(context, {'subnet_id': subnet.id,
+                                      'state': 'active',
+                                      'port_id': port['id'],
+                                      'mac_address': port['mac_addr']})
+            else:
+                try:
+                    port = self.network_api.show_port(subnet.port_id)
+                except exception.NetworkException:
+                    db.subnet_update(context, {'subnet_id': subnet.id,
+                                      'state': 'error'})
+                    raise
+            ports.append(port)
+        return ports
+
     def create_share(self, context, share_id, request_spec=None,
                      filter_properties=None, snapshot_id=None):
         """Creates a share."""
@@ -100,6 +141,7 @@ class ShareManager(manager.SchedulerDependentManager):
             filter_properties = {}
 
         share_ref = self.db.share_get(context, share_id)
+
         if snapshot_id is not None:
             snapshot_ref = self.db.share_snapshot_get(context, snapshot_id)
         else:
@@ -112,6 +154,10 @@ class ShareManager(manager.SchedulerDependentManager):
                                                              snapshot_ref)
             else:
                 self.driver.allocate_container(context, share_ref)
+
+            ports = self._allocate_network(context, share_ref)
+            self.driver.setup_network(context, share_ref, ports)
+
             export_location = self.driver.create_share(context, share_ref)
             self.db.share_update(context, share_id,
                                  {'export_location': export_location})

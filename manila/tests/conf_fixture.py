@@ -36,3 +36,4 @@ def set_defaults(conf):
     conf.set_default('share_export_ip', '0.0.0.0')
     conf.set_default('share_driver',
                      'manila.tests.fake_driver.FakeShareDriver')
+    conf.set_default('network_api_class', 'manila.tests.fake_network.API')

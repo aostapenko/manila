@@ -47,7 +47,7 @@ class API(object):
         "extra_dhcp_opts": [],
         "device_owner": "fake",
         "binding:capabilities": {"port_filter": True},
-        "mac_address": "00:00:00:00:00:00",
+        "mac_addr": "00:00:00:00:00:00",
         "fixed_ips": [
             {"subnet_id": "56537094-98d7-430a-b513-81c4dc6d9903",
              "ip_address": "10.12.12.10"}
@@ -68,7 +68,8 @@ class API(object):
         return [net1, net2]
 
     def create_port(self, tenant_id, network_id, subnet_id=None,
-                    fixed_ip=None, device_owner=None, device_id=None):
+                    fixed_ip=None, device_owner=None, device_id=None,
+                    mac_address=None):
         port = self.port.copy()
         port['network_id'] = network_id
         port['admin_state_up'] = True
@@ -82,6 +83,8 @@ class API(object):
                 port['device_owner'] = device_owner
         if device_id:
                 port['device_id'] = device_id
+        if mac_address:
+            port['mac_addr'] = mac_address
         return port
 
     def list_ports(self, **search_opts):

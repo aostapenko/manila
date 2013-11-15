@@ -94,6 +94,10 @@ class LVMShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         for helper in self._helpers.values():
             helper.init()
 
+    def setup_network(self, context, share, ports):
+        """Setup network for share exporting."""
+        pass
+
     def _setup_helpers(self):
         """Initializes protocol-specific NAS drivers."""
         self._helpers = {}

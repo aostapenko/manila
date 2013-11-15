@@ -93,6 +93,9 @@ class FakeShareDriver(object):
     def do_setup(self, context):
         pass
 
+    def setup_network(self, context, share, ports):
+        pass
+
 
 class ShareTestCase(test.TestCase):
     """Test Case for shares."""
@@ -143,8 +146,9 @@ class ShareTestCase(test.TestCase):
     def test_init_host_ensuring_shares(self):
         """Test init_host for ensuring shares and access rules."""
 
-        share = self._create_share(status='available')
-        share_id = share['id']
+        share_id = self._create_share(status='available')['id']
+        share = db.share_get(context.get_admin_context(), share_id)
+        ports = []
 
         another_share = self._create_share(status='error')
 
@@ -160,6 +164,7 @@ class ShareTestCase(test.TestCase):
         driver = self.mox.CreateMockAnything(FakeShareDriver)
         driver.do_setup(self.context)
         driver.check_for_setup_error()
+        driver.setup_network(self.context, share, ports)
         driver.ensure_share(self.context, share)
         driver.allow_access(self.context, share, mox.IgnoreArg())
         driver.get_share_stats(refresh=True)
@@ -367,3 +372,75 @@ class ShareTestCase(test.TestCase):
 
         acs = db.share_access_get(self.context, access_id)
         self.assertEquals(acs['state'], 'error')
+
+    def test__allocate_network_empty(self):
+        share_id = db.share_create(context.get_admin_context(),
+                                   {'project_id': '1'})['id']
+        share_ref = db.share_get(context.get_admin_context(), share_id)
+        result = self.share._allocate_network(context.get_admin_context(),
+                                              share_ref)
+        self.assertEquals(result, [])
+
+    def test__allocate_network_01(self):
+        share_id = db.share_create(context.get_admin_context(),
+                                   {'project_id': '1'})['id']
+        share_ref = db.share_get(context.get_admin_context(), share_id)
+        subnet_values = {'id': '0000-0000-0000-0000',
+                  'project_id': '1',
+                  'net_id': '1111-1111-1111-1111',
+                  'port_id': '2222-2222-2222-2222',
+                  'mac_address': '00:00:00:00:00:00',
+                  'fixed_ip': '10.0.0.2',
+                }
+        subnet_ref = db.subnet_add(context.get_admin_context(),
+                                   subnet_values)
+        db.subnet_share_associate(context.get_admin_context(),
+                                  subnet_ref['id'],
+                                  share_id)
+        share_ref = db.share_get(context.get_admin_context(), share_id)
+        result = self.share._allocate_network(context.get_admin_context(),
+                                              share_ref)
+        self.assertEquals(len(result), 1)
+        self.assertEquals(result[0]['id'], subnet_values['port_id'])
+
+    def test__allocate_network_02(self):
+        share_id = db.share_create(context.get_admin_context(),
+                                   {'project_id': '1'})['id']
+        share_ref = db.share_get(context.get_admin_context(), share_id)
+        subnet_values = {'id': '0000-0000-0000-0000',
+                  'project_id': '1',
+                  'net_id': '1111-1111-1111-1111',
+                  'fixed_ip': '10.0.0.2',
+                }
+        subnet_ref = db.subnet_add(context.get_admin_context(),
+                                   subnet_values)
+        db.subnet_share_associate(context.get_admin_context(),
+                                  subnet_ref['id'],
+                                  share_id)
+        share_ref = db.share_get(context.get_admin_context(), share_id)
+        result = self.share._allocate_network(context.get_admin_context(),
+                                              share_ref)
+        self.assertEquals(len(result), 1)
+        self.assertEquals(result[0]['id'], 'fake_port_id')
+
+    def test__allocate_network_error_subnet(self):
+        share_id = db.share_create(context.get_admin_context(),
+                                   {'project_id': '1'})['id']
+        share_ref = db.share_get(context.get_admin_context(), share_id)
+        subnet_values = {'id': '0000-0000-0000-0000',
+                  'project_id': '1',
+                  'net_id': '1111-1111-1111-1111',
+                  'fixed_ip': '10.0.0.2',
+                }
+        subnet_ref = db.subnet_add(context.get_admin_context(),
+                                   subnet_values)
+        db.subnet_share_associate(context.get_admin_context(),
+                                  subnet_ref['id'],
+                                  share_id)
+        subnet_ref = db.subnet_update(context.get_admin_context(),
+                                      {'subnet_id': subnet_ref['id'],
+                                       'state': 'error'})
+        share_ref = db.share_get(context.get_admin_context(), share_id)
+        result = self.share._allocate_network(context.get_admin_context(),
+                                              share_ref)
+        self.assertEquals(result, [])

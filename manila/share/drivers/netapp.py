@@ -69,6 +69,10 @@ class NetAppShareDriver(driver.ShareDriver):
         self.configuration.append_config_values(NETAPP_NAS_OPTS)
         self._client = NetAppApiClient(self.configuration)
 
+    def setup_network(self, context, share, ports):
+        """Setup network for share exporting."""
+        pass
+
     def allocate_container(self, context, share):
         """Allocate space for the share on aggregates."""
         aggregate = self._find_best_aggregate()
