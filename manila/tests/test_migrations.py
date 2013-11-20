@@ -369,3 +369,68 @@ class TestMigrations(test.TestCase):
             LOG.error("Failed to migrate to version %s on engine %s" %
                       (version, engine))
             raise
+
+    def test_migration_006(self):
+        """Test adding subnets table works correctly."""
+        for (key, engine) in self.engines.items():
+            migration_api.version_control(engine,
+                                          TestMigrations.REPOSITORY,
+                                          migration.INIT_VERSION)
+            migration_api.upgrade(engine, TestMigrations.REPOSITORY, 5)
+            metadata = sqlalchemy.schema.MetaData()
+            metadata.bind = engine
+
+            migration_api.upgrade(engine, TestMigrations.REPOSITORY, 6)
+
+            self.assertTrue(engine.dialect.has_table(engine.connect(),
+                                    "neutron_subnets"))
+            self.assertTrue(engine.dialect.has_table(engine.connect(),
+                                    "neutron_subnet_share_associations"))
+
+            subnets = sqlalchemy.Table('neutron_subnets',
+                                       metadata, autoload=True)
+
+            self.assertIsInstance(subnets.c.created_at.type,
+                                  sqlalchemy.types.DATETIME)
+            self.assertIsInstance(subnets.c.updated_at.type,
+                                  sqlalchemy.types.DATETIME)
+            self.assertIsInstance(subnets.c.deleted_at.type,
+                                  sqlalchemy.types.DATETIME)
+            self.assertIsInstance(subnets.c.deleted.type,
+                                  sqlalchemy.types.BOOLEAN)
+            self.assertIsInstance(subnets.c.id.type,
+                                  sqlalchemy.types.VARCHAR)
+            self.assertIsInstance(subnets.c.net_id.type,
+                                  sqlalchemy.types.VARCHAR)
+            self.assertIsInstance(subnets.c.port_id.type,
+                                  sqlalchemy.types.VARCHAR)
+            self.assertIsInstance(subnets.c.mac_address.type,
+                                  sqlalchemy.types.VARCHAR)
+            self.assertIsInstance(subnets.c.fixed_ip.type,
+                                  sqlalchemy.types.VARCHAR)
+            self.assertIsInstance(subnets.c.state.type,
+                                  sqlalchemy.types.VARCHAR)
+
+            subnet_assoc = sqlalchemy.\
+                            Table('neutron_subnet_share_associations',
+                                  metadata, autoload=True)
+
+            self.assertIsInstance(subnet_assoc.c.created_at.type,
+                                  sqlalchemy.types.DATETIME)
+            self.assertIsInstance(subnet_assoc.c.updated_at.type,
+                                  sqlalchemy.types.DATETIME)
+            self.assertIsInstance(subnet_assoc.c.deleted_at.type,
+                                  sqlalchemy.types.DATETIME)
+            self.assertIsInstance(subnet_assoc.c.deleted.type,
+                                  sqlalchemy.types.BOOLEAN)
+            self.assertIsInstance(subnet_assoc.c.subnet_id.type,
+                                  sqlalchemy.types.VARCHAR)
+            self.assertIsInstance(subnet_assoc.c.share_id.type,
+                                  sqlalchemy.types.VARCHAR)
+
+            migration_api.downgrade(engine, TestMigrations.REPOSITORY, 5)
+
+            self.assertFalse(engine.dialect.has_table(engine.connect(),
+                                     "neutron_subnets"))
+            self.assertFalse(engine.dialect.has_table(engine.connect(),
+                                     "neutron_subnet_share_associations"))

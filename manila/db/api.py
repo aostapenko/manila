@@ -430,3 +430,43 @@ def share_snapshot_data_get_for_project(context, project_id, session=None):
 
 
 ####################
+
+
+def subnet_get_all_by_project(context, project_id):
+    """Get all subnets, associated with tenant in manila."""
+    return IMPL.subnet_get_all_by_project(context, project_id)
+
+
+def subnet_get_all_by_share(context, share_id):
+    """Get all subnets, associated with current share."""
+    return IMPL.subnet_get_all_by_share(context, share_id)
+
+
+def subnet_get(context, subnet_id):
+    """Get subnet by its id."""
+    return IMPL.subnet_get(context, subnet_id)
+
+
+def subnet_update(context, values):
+    """Updates subnet info."""
+    return IMPL.subnet_update(context, values)
+
+
+def subnet_add(context, values):
+    """Add subnet to current tenant in manila."""
+    return IMPL.subnet_add(context, values)
+
+
+def subnet_remove(context, subnet_id):
+    """Remove subnet from current tenant in manila."""
+    return IMPL.subnet_remove(context, subnet_id)
+
+
+def subnet_share_associate(context, subnet_id, share_id):
+    """Associate subnet and share."""
+    return IMPL.subnet_share_associate(context, subnet_id, share_id)
+
+
+def subnet_share_deassociate(context, subnet_id, share_id):
+    """Deassociate subnet and share."""
+    return IMPL.subnet_share_deassociate(context, subnet_id, share_id)

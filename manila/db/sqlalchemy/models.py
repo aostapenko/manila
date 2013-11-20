@@ -232,6 +232,28 @@ class Migration(BASE, ManilaBase):
     status = Column(String(255))
 
 
+class NeutronSubnetShareAssociation(BASE, ManilaBase):
+    """Represents an association bettwen NeutronSubnet and Share."""
+    __tablename__ = 'neutron_subnet_share_associations'
+    subnet_id = Column(String(36), ForeignKey('neutron_subnets.id'),
+                       primary_key=True)
+    share_id = Column(String(36), ForeignKey('shares.id'),
+                      primary_key=True)
+
+
+class NeutronSubnet(BASE, ManilaBase):
+    "Represents subnets used by tenant."
+    __tablename__ = 'neutron_subnets'
+
+    id = Column(String(36), primary_key=True)
+    project_id = Column(String(255))
+    port_id = Column(String(255))
+    net_id = Column(String(255))
+    fixed_ip = Column(String(255))
+    mac_address = Column(String(255))
+    state = Column(String(255))
+
+
 class Share(BASE, ManilaBase):
     """Represents an NFS and CIFS shares."""
     __tablename__ = 'shares'
@@ -255,6 +277,17 @@ class Share(BASE, ManilaBase):
     snapshot_id = Column(String(36))
     share_proto = Column(String(255))
     export_location = Column(String(255))
+    subnets = relationship(NeutronSubnet,
+                         secondary='neutron_subnet_share_associations',
+                         primaryjoin='and_('
+        'Share.id == '
+        'NeutronSubnetShareAssociation.share_id,'
+        'NeutronSubnetShareAssociation.deleted == 0,'
+        'Share.deleted == 0)',
+                             secondaryjoin='and_('
+        'NeutronSubnetShareAssociation.subnet_id == NeutronSubnet.id,'
+        'NeutronSubnet.deleted == 0)',
+                             backref='shares')
 
 
 class ShareAccessMapping(BASE, ManilaBase):

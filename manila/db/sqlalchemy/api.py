@@ -1037,7 +1037,8 @@ def reservation_expire(context):
 def _share_get_query(context, session=None):
     if session is None:
         session = get_session()
-    return model_query(context, models.Share, session=session)
+    return model_query(context, models.Share, session=session).\
+                    options(joinedload('subnets'))
 
 
 @require_context
@@ -1060,7 +1061,8 @@ def share_data_get_for_project(context, project_id, user_id, session=None):
                         func.sum(models.Share.size),
                         read_deleted="no",
                         session=session).\
-        filter_by(project_id=project_id)
+        filter_by(project_id=project_id).\
+        options(joinedload('subnets'))
     if user_id:
         result = query.filter_by(user_id=user_id).first()
     else:
@@ -1284,3 +1286,92 @@ def share_snapshot_update(context, snapshot_id, values):
         snapshot_ref.update(values)
         snapshot_ref.save(session=session)
         return snapshot_ref
+
+
+############################################################
+
+
+def _subnet_get_query(context, session=None):
+    return model_query(context, models.NeutronSubnet, session=session)
+
+
+@require_context
+def subnet_get_all_by_project(context, project_id, session=None):
+    return _subnet_get_query(context, session=session).\
+            filter_by(project_id=project_id).all()
+
+
+@require_context
+def subnet_get_all_by_share(context, share_id, session=None):
+    return share_get(share_id, session=session).subnets
+
+
+@require_context
+def subnet_get(context, subnet_id, session=None):
+    subnet_ref = _subnet_get_query(context, session).\
+                 filter_by(id=subnet_id).first()
+    if not subnet_ref:
+        raise exception.SubnetIsNotAdded(subnet_id=subnet_id)
+    return subnet_ref
+
+
+@require_context
+def subnet_add(context, values):
+    session = get_session()
+    try:
+        subnet_get(context, values['id'], session)
+    except exception.SubnetIsNotAdded:
+        pass
+    else:
+        raise exception.SubnetIsAlreadyAdded(subnet_id=values['id'])
+    values['state'] = 'inactive'
+    subnet_ref = models.NeutronSubnet()
+    subnet_ref.update(values)
+    subnet_ref.save(session=session)
+    return subnet_ref
+
+
+@require_context
+def subnet_update(context, values):
+    session = get_session()
+    subnet_ref = subnet_get(context, values['subnet_id'], session)
+    subnet_ref.update(values)
+    subnet_ref.save(session=session)
+    return subnet_ref
+
+
+@require_context
+def subnet_remove(context, subnet_id):
+    session = get_session()
+    subnet_ref = subnet_get(context, subnet_id, session)
+    subnet_ref.delete(session=session)
+    model_query(context, models.NeutronSubnetShareAssociation,
+                session=session).\
+            filter_by(subnet_id=subnet_id).\
+            delete()
+
+
+@require_context
+def subnet_share_associate(context, subnet_id, share_id):
+    session = get_session()
+    share_ref = share_get(context, share_id, session=session)
+    subnet_ref = subnet_get(context, subnet_id, session=session)
+    if subnet_ref not in share_ref.subnets:
+        share_ref.subnets.append(subnet_ref)
+        share_ref.save(session=session)
+    else:
+        raise exception.SubnetIsAlreadyAssociated(subnet_id=subnet_id,
+                                                      share_id=share_id)
+
+
+@require_context
+def subnet_share_deassociate(context, subnet_id, share_id):
+    session = get_session()
+    assoc_ref = model_query(context, models.NeutronSubnetShareAssociation,
+                            session=session).\
+            filter_by(share_id=share_id, subnet_id=subnet_id).\
+            first()
+    if not assoc_ref:
+        raise exception.SubnetIsNotAssociated(subnet_id=subnet_id,
+                                              share_id=share_id)
+    assoc_ref.delete(session=session)
