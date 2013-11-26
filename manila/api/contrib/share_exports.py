@@ -61,11 +61,17 @@ class ShareExportsController(object):
             try:
                 values = _get_subnet_params(network_info)
                 values['project_id'] = context.project_id
-                subnet_ref = db.subnet_add(context, values)
+                share_ref = db.share_get(context, share_id)
+                try:
+                    subnet_ref = db.subnet_get(context,
+                                               network_info['subnet_id'])
+                except exception.SubnetIsNotAdded:
+                    subnet_ref = db.subnet_add(context, values)
+                db.subnet_share_associate(context, subnet_ref['id'],
+                                          share_ref['id']) 
             except Exception as e:
                 LOG.debug(e)
                 raise webob.exc.HTTPForbidden()
-
         return {'export': {'anana': 'ololo', 'pupupu': 'kokoko'}}
 
 #    @wsgi.serializers(xml=QuotaTemplate)
