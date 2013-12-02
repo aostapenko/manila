@@ -29,8 +29,8 @@ def upgrade(migrate_engine):
 
     Table('shares', meta, autoload=True)
 
-    neutron_subnets = Table(
-        'neutron_subnets', meta,
+    neutron_allocations= Table(
+        'neutron_allocations', meta,
         Column('id', Integer, primary_key=True, nullable=False),
         Column('created_at', DateTime),
         Column('updated_at', DateTime),
@@ -47,14 +47,14 @@ def upgrade(migrate_engine):
         mysql_charset='utf8',
     )
 
-    subnet_share_assoc = Table(
-        'neutron_subnet_share_associations', meta,
+    alloc_share_assoc = Table(
+        'neutron_allocation_share_associations', meta,
         Column('created_at', DateTime),
         Column('updated_at', DateTime),
         Column('deleted_at', DateTime),
         Column('deleted', Boolean, default=False),
-        Column('subnet_id', Integer,
-               ForeignKey('neutron_subnets.id'),
+        Column('neutron_allocation_id', Integer,
+               ForeignKey('neutron_allocations.id'),
                primary_key=True),
         Column('share_id', String(length=36),
                ForeignKey('shares.id'),
@@ -63,20 +63,19 @@ def upgrade(migrate_engine):
         mysql_charset='utf8',
     )
     try:
-        neutron_subnets.create()
-        subnet_share_assoc.create()
+        neutron_allocations.create()
+        alloc_share_assoc.create()
     except Exception:
         LOG.exception(_("Exception while creating table"))
-        meta.drop_all(tables=[neutron_subnets, subnet_share_assoc])
+        meta.drop_all(tables=[neutron_allocations, alloc_share_assoc])
         raise
 
 
 def downgrade(migrate_engine):
     meta = MetaData()
     meta.bind = migrate_engine
-    neutron_subnets = Table('neutron_subnets', meta, autoload=True)
-    subnet_share_assoc = Table('neutron_subnet_share_associations', meta,
+    neutron_allocations= Table('neutron_allocations', meta, autoload=True)
+    alloc_share_assoc = Table('neutron_allocation_share_associations', meta,
                              autoload=True)
-
-    subnet_share_assoc.drop()
-    neutron_subnets.drop()
+    alloc_share_assoc.drop()
+    neutron_allocations.drop()

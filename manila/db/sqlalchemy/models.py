@@ -232,18 +232,19 @@ class Migration(BASE, ManilaBase):
     status = Column(String(255))
 
 
-class NeutronSubnetShareAssociation(BASE, ManilaBase):
-    """Represents an association bettwen NeutronSubnet and Share."""
-    __tablename__ = 'neutron_subnet_share_associations'
-    subnet_id = Column(String(36), ForeignKey('neutron_subnets.id'),
-                       primary_key=True)
+class NeutronAllocationShareAssociation(BASE, ManilaBase):
+    """Represents an association bettwen NeutronAllocation and Share."""
+    __tablename__ = 'neutron_allocation_share_associations'
+    neutron_allocation_id = Column(String(36),
+                                   ForeignKey('neutron_allocations.id'),
+                                   primary_key=True)
     share_id = Column(String(36), ForeignKey('shares.id'),
                       primary_key=True)
 
 
-class NeutronSubnet(BASE, ManilaBase):
-    "Represents subnets used by tenant."
-    __tablename__ = 'neutron_subnets'
+class NeutronAllocation(BASE, ManilaBase):
+    "Represents neutron network allocation used by tenant."
+    __tablename__ = 'neutron_allocations'
 
     id = Column(Integer, primary_key=True, nullable=False)
     subnet_id = Column(String(36), nullable=False)
@@ -278,17 +279,18 @@ class Share(BASE, ManilaBase):
     snapshot_id = Column(String(36))
     share_proto = Column(String(255))
     export_location = Column(String(255))
-    subnets = relationship(NeutronSubnet,
-                         secondary='neutron_subnet_share_associations',
-                         primaryjoin='and_('
+    network_allocation = relationship(NeutronAllocation,
+            secondary='neutron_allocation_share_associations',
+            primaryjoin='and_('
         'Share.id == '
-        'NeutronSubnetShareAssociation.share_id,'
-        'NeutronSubnetShareAssociation.deleted == 0,'
+        'NeutronAllocationShareAssociation.share_id,'
+        'NeutronAllocationShareAssociation.deleted == 0,'
         'Share.deleted == 0)',
-                             secondaryjoin='and_('
-        'NeutronSubnetShareAssociation.subnet_id == NeutronSubnet.id,'
-        'NeutronSubnet.deleted == 0)',
-                             backref='shares')
+                           secondaryjoin='and_('
+        'NeutronAllocationShareAssociation.neutron_allocation_id == '
+        'NeutronAllocation.id,'
+        'NeutronAllocation.deleted == 0)',
+                           backref='shares')
 
 
 class ShareMetadata(BASE, ManilaBase):

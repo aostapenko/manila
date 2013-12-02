@@ -411,7 +411,7 @@ class TestMigrations(test.TestCase):
                                                       "share_metadata"))
 
     def test_migration_007(self):
-        """Test adding subnets table works correctly."""
+        """Test adding neutron_allocations table works correctly."""
         for (key, engine) in self.engines.items():
             migration_api.version_control(engine,
                                           TestMigrations.REPOSITORY,
@@ -423,11 +423,11 @@ class TestMigrations(test.TestCase):
             migration_api.upgrade(engine, TestMigrations.REPOSITORY, 7)
 
             self.assertTrue(engine.dialect.has_table(engine.connect(),
-                                    "neutron_subnets"))
+                                    "neutron_allocations"))
             self.assertTrue(engine.dialect.has_table(engine.connect(),
-                                    "neutron_subnet_share_associations"))
+                                    "neutron_allocation_share_associations"))
 
-            subnets = sqlalchemy.Table('neutron_subnets',
+            subnets = sqlalchemy.Table('neutron_allocations',
                                        metadata, autoload=True)
 
             self.assertIsInstance(subnets.c.created_at.type,
@@ -454,7 +454,7 @@ class TestMigrations(test.TestCase):
                                   sqlalchemy.types.VARCHAR)
 
             subnet_assoc = sqlalchemy.\
-                            Table('neutron_subnet_share_associations',
+                            Table('neutron_allocation_share_associations',
                                   metadata, autoload=True)
 
             self.assertIsInstance(subnet_assoc.c.created_at.type,
@@ -473,6 +473,6 @@ class TestMigrations(test.TestCase):
             migration_api.downgrade(engine, TestMigrations.REPOSITORY, 6)
 
             self.assertFalse(engine.dialect.has_table(engine.connect(),
-                                     "neutron_subnets"))
+                                     "neutron_allocations"))
             self.assertFalse(engine.dialect.has_table(engine.connect(),
-                                     "neutron_subnet_share_associations"))
+                                     "neutron_allocation_share_associations"))
