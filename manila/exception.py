@@ -491,3 +491,21 @@ class InvalidShareMetadata(Invalid):
 
 class InvalidShareMetadataSize(Invalid):
     message = _("Invalid metadata size")
+
+
+class SubnetIsAlreadyAssociated(ManilaException):
+    message = _("Subnet %(subnet_id)s is already associated"
+                "to share %(share_id)s")
+
+
+class SubnetIsNotAdded(ManilaException):
+    message = _("Subnet %(subnet_id)s is not added")
+
+
+class SubnetIsAlreadyAdded(ManilaException):
+    message = _("Subnet %(subnet_id)s is already added")
+
+
+class SubnetIsNotAssociated(ManilaException):
+    message = _("Subnet %(subnet_id)s is not associated"
+                "to share %(share_id)s")

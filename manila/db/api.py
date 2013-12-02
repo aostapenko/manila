@@ -445,3 +445,43 @@ def share_metadata_delete(context, share_id, key):
 def share_metadata_update(context, share, metadata, delete):
     """Update metadata if it exists, otherwise create it."""
     IMPL.share_metadata_update(context, share, metadata, delete)
+
+
+def subnet_get_all_by_project(context, project_id):
+    """Get all subnets, associated with tenant in manila."""
+    return IMPL.subnet_get_all_by_project(context, project_id)
+
+
+def subnet_get_all_by_share(context, share_id):
+    """Get all subnets, associated with current share."""
+    return IMPL.subnet_get_all_by_share(context, share_id)
+
+
+def subnet_get(context, subnet_id):
+    """Get subnet by its id."""
+    return IMPL.subnet_get(context, subnet_id)
+
+
+def subnet_update(context, values):
+    """Updates subnet info."""
+    return IMPL.subnet_update(context, values)
+
+
+def subnet_add(context, values):
+    """Add subnet to current tenant in manila."""
+    return IMPL.subnet_add(context, values)
+
+
+def subnet_remove(context, subnet_id):
+    """Remove subnet from current tenant in manila."""
+    return IMPL.subnet_remove(context, subnet_id)
+
+
+def subnet_share_associate(context, subnet_id, share_id):
+    """Associate subnet and share."""
+    return IMPL.subnet_share_associate(context, subnet_id, share_id)
+
+
+def subnet_share_deassociate(context, subnet_id, share_id):
+    """Deassociate subnet and share."""
+    return IMPL.subnet_share_deassociate(context, subnet_id, share_id)
