@@ -495,3 +495,15 @@ class InvalidShareMetadataSize(Invalid):
 
 class SecurityServiceNotFound(NotFound):
     message = _("Security service %(security_service_id)s could not be found.")
+
+
+class InvalidVolume(Invalid):
+    message = _("Invalid volume.")
+
+
+class VolumeNotFound(NotFound):
+    message = _("Volume %(volume_id)s could not be found.")
+
+
+class VolumeSnapshotNotFound(NotFound):
+    message = _("Snapshot %(snapshot_id)s could not be found.")
