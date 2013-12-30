@@ -491,3 +491,15 @@ class InvalidShareMetadata(Invalid):
 
 class InvalidShareMetadataSize(Invalid):
     message = _("Invalid metadata size")
+
+
+class InvalidVolume(Invalid):
+    message = _("Invalid volume.")
+
+
+class VolumeNotFound(NotFound):
+    message = _("Volume not found.")
+
+
+class SnapshotNotFound(NotFound):
+    message = _("Snapshot not found.")
