@@ -53,6 +53,9 @@ share_opts = [
     cfg.IntOpt('max_time_to_build_instance',
                default=120,
                help="Maximum time to wait for creating service instance"),
+    cfg.IntOpt('max_time_to_create_volume',
+               default=120,
+               help="Maximum time to wait for creating cinder volume"),
     cfg.ListOpt('share_lvm_helpers',
                 default=[
                     'CIFS=manila.share.drivers.generic.CIFSHelper',
@@ -100,8 +103,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def create_share(self, context, share):
         server = self._get_service_instance(context)
-        self._allocate_container(context, share)
+        volume = self._allocate_container(context, share)
+        self._mount_volume(context, server, volume)
         return 'ololo' 
+
+    def _mount_volume(self, context, server, volume):
+        self.compute_api.instance_volume_attach(context, server['id'],
+                                                volume['id'], '/dev/hui')
 
     def _get_service_instance(self, context):
         return self._create_service_instance(context)
@@ -120,7 +128,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
         t = time.time() 
         while time.time() - t < self.configuration.max_time_to_build_instance:
-            if service_instance['status'] != 'ACTIVE':
+            if service_instance['status'] == 'ACTIVE':
                 break
             time.sleep(1)
             service_instance = self.compute_api.server_get(context,
@@ -131,7 +139,19 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return service_instance
 
     def _allocate_container(self, context, share):
-        self.volume_api.create(context, share['size'], '', '')
+        volume = self.volume_api.create(context, share['size'], '', '')
+
+        t = time.time() 
+        while time.time() - t < self.configuration.max_time_to_create_volume:
+            if volume['status'] == 'available':
+                break
+            time.sleep(1)
+            volume = self.volume_api.get(context, volume['id'])
+        else:
+            raise exception.ManilaException('Volume creating timeout')
+
+        return volume 
+
 
     def _deallocate_container(self, share_name):
         """Deletes a logical volume for share."""
