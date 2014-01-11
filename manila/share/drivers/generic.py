@@ -23,9 +23,11 @@ import ConfigParser
 import math
 import os
 import re
+import time
 
 from manila import compute
 from manila import exception
+from manila.image import glance
 from manila.openstack.common import importutils
 from manila.openstack.common import log as logging
 from manila.share import driver
@@ -41,6 +43,16 @@ share_opts = [
     cfg.StrOpt('smb_config_path',
                default='$state_path/smb.conf',
                help="Path to smb config"),
+    cfg.StrOpt('service_image_name',
+               default='cirros-0.3.1-x86_64-uec',
+               help="Name of image in glance, that will be used to create "
+               "service instance"),
+    cfg.StrOpt('service_instance_name',
+               default='manila_service_instance',
+               help="Name of service instance"),
+    cfg.IntOpt('max_time_to_build_instance',
+               default=120,
+               help="Maximum time to wait for creating service instance"),
     cfg.ListOpt('share_lvm_helpers',
                 default=[
                     'CIFS=manila.share.drivers.generic.CIFSHelper',
@@ -72,6 +84,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         super(GenericShareDriver, self).do_setup(context)
         self.compute_api = compute.API()
         self.volume_api = volume.API()
+        self.image_api = glance.get_default_image_service()
         self._setup_helpers()
         for helper in self._helpers.values():
             helper.init()
@@ -86,11 +99,36 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                         self.configuration)
 
     def create_share(self, context, share):
+        server = self._get_service_instance(context)
         self._allocate_container(context, share)
-        mount_path = self._get_mount_path(share)
-        location = self._get_helper(share).create_export(mount_path,
-                                                         share['name'])
-        return location
+        return 'ololo' 
+
+    def _get_service_instance(self, context):
+        return self._create_service_instance(context)
+
+    def _create_service_instance(self, context):
+        images = [image['id'] for image in self.image_api.detail(context)
+            if image['name'] == self.configuration.service_image_name]
+        if not images:
+            raise exception.ManilaException('No appropriate image was found')
+        elif len(images) > 1:
+            raise exception.ManilaException('Ambigious image name')
+
+        service_instance = self.compute_api.server_create(context,
+                                self.configuration.service_instance_name,
+                                images[0], 42, None, None, None)
+
+        t = time.time() 
+        while time.time() - t < self.configuration.max_time_to_build_instance:
+            if service_instance['status'] != 'ACTIVE':
+                break
+            time.sleep(1)
+            service_instance = self.compute_api.server_get(context,
+                    service_instance['id'])
+        else:
+            raise exception.ManilaException('Server waiting timeout')
+
+        return service_instance
 
     def _allocate_container(self, context, share):
         self.volume_api.create(context, share['size'], '', '')
