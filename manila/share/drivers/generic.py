@@ -86,16 +86,14 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                         self.configuration)
 
     def create_share(self, context, share):
-        self._allocate_container(share)
-        device_name = self._local_path(share)
+        self._allocate_container(context, share)
         mount_path = self._get_mount_path(share)
         location = self._get_helper(share).create_export(mount_path,
                                                          share['name'])
-        self._mount_device(share, device_name)
         return location
 
-    def _allocate_container(self, share):
-        pass
+    def _allocate_container(self, context, share):
+        self.volume_api.create(context, share['size'], '', '')
 
     def _deallocate_container(self, share_name):
         """Deletes a logical volume for share."""
@@ -264,7 +262,7 @@ class NASHelperBase(object):
 
 class NFSHelper(NASHelperBase):
     """Interface to work with share."""
-#
+
 #    def __init__(self, execute, config_object):
 #        super(NFSHelper, self).__init__(execute, config_object)
 #        try:
