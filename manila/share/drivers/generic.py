@@ -24,6 +24,7 @@ import math
 import os
 import re
 import time
+import threading
 
 from manila import compute
 from manila import exception
@@ -56,6 +57,14 @@ share_opts = [
     cfg.IntOpt('max_time_to_create_volume',
                default=120,
                help="Maximum time to wait for creating cinder volume"),
+    cfg.IntOpt('max_time_to_attach',
+               default=120,
+               help="Maximum time to wait for attaching cinder volume"),
+
+     cfg.IntOpt('service_instance_flavor_id',
+               default=42,
+               help="ID of flavor, that will be used for service instance "
+               "creation"),
     cfg.ListOpt('share_lvm_helpers',
                 default=[
                     'CIFS=manila.share.drivers.generic.CIFSHelper',
@@ -66,7 +75,7 @@ share_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(share_opts)
-
+lock = threading.RLock()
 
 class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     """Executes commands relating to Shares."""
@@ -102,21 +111,54 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                         self.configuration)
 
     def create_share(self, context, share):
-        server = self._get_service_instance(context)
-        volume = self._allocate_container(context, share)
-        self._mount_volume(context, server, volume)
+        with lock:
+            server = self._get_service_instance(context)
+            volume = self._allocate_container(context, share)
+            self._mount_volume(context, server, volume)
         return 'ololo' 
 
     def _mount_volume(self, context, server, volume):
-        self.compute_api.instance_volume_attach(context, server['id'],
-                                                volume['id'], '/dev/hui')
+        device_path = self._get_device_path(context, server)
+        volume = self.compute_api.instance_volume_attach(context, server['id'],
+                                                volume['id'], device_path)
+        volume = self.volume_api.get(context, volume.id)
+        t = time.time() 
+        while time.time() - t < self.configuration.max_time_to_attach:
+            if volume['status'] == 'in-use':
+                break
+            if volume['status'] == 'error':
+                raise exception.ManilaException('Volume error')
+            time.sleep(1)
+            volume = self.volume_api.get(context,
+                    volume['id'])
+        else:
+            raise exception.ManilaException('Volume attach timeout')
+
+        return volume 
+
+
+    def _get_device_path(self, context, server):
+        volumes = self.compute_api.instance_volumes_list(context, server['id'])
+        if not volumes:
+            return '/dev/vdb'
+        last_used_name = sorted([volume.device for volume in volumes
+                if '/dev/vd' in volume.device])[-1]
+        device_name = last_used_name[:-1] + chr(ord(last_used_name[-1]) + 1)
+        return device_name 
 
     def _get_service_instance(self, context):
-        return self._create_service_instance(context)
+        servers = self.compute_api.server_list(context,
+                    {'name': self.configuration.service_instance_name})
+        if not servers:
+            return self._create_service_instance(context)
+        elif len(servers) > 1:
+            raise exception.ManilaException('Ambigious service instances')
+        else:
+            return servers[0]
 
     def _create_service_instance(self, context):
         images = [image['id'] for image in self.image_api.detail(context)
-            if image['name'] == self.configuration.service_image_name]
+                if image['name'] == self.configuration.service_image_name]
         if not images:
             raise exception.ManilaException('No appropriate image was found')
         elif len(images) > 1:
@@ -124,7 +166,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
         service_instance = self.compute_api.server_create(context,
                                 self.configuration.service_instance_name,
-                                images[0], 42, None, None, None)
+                                images[0],
+                                self.configuration.service_instance_flavor_id,
+                                None, None, None)
 
         t = time.time() 
         while time.time() - t < self.configuration.max_time_to_build_instance:
@@ -145,6 +189,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         while time.time() - t < self.configuration.max_time_to_create_volume:
             if volume['status'] == 'available':
                 break
+            if volume['status'] == 'error':
+                raise exception.ManilaException('Volume creating error')
             time.sleep(1)
             volume = self.volume_api.get(context, volume['id'])
         else:
