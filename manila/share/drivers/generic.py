@@ -81,7 +81,7 @@ lock = threading.RLock()
 
 
 def synchronized(f):
-    """Decorates function _get_domain with unique locks for each tenant
+    """Decorates function with unique locks for each tenant
     """
     def wrapped_func(self, context, tenant_id, *args, **kwargs):
         with self.tenants_locks.setdefault(tenant_id, threading.RLock()):
@@ -262,6 +262,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 try:
                     volume = self.volume_api.get(context, volume['id'])
                 except Exception as e:
+                    LOG.error('_deallocate_in_while')
                     if 'could not be found' not in e.message:
                         raise 
                     break
