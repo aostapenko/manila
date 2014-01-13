@@ -126,11 +126,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def create_share(self, context, share):
         server = self._get_service_instance(context, share['project_id'])
         volume = self._allocate_container(context, share)
-        self._mount_volume(context, share['project_id'], server, volume)
+        self._attach_volume(context, share['project_id'], server, volume)
         return 'ololo' 
 
     @synchronized 
-    def _mount_volume(self, context, tenant_id, server, volume):
+    def _attach_volume(self, context, tenant_id, server, volume):
         device_path = self._get_device_path(context, server)
         try:
             self.compute_api.instance_volume_attach(context, server['id'],
@@ -152,6 +152,34 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
         return volume 
 
+    def _get_volume(self, context, share):
+        volume_name = self.configuration.volume_name_template + share['id']
+        volumes_list = self.volume_api.get_all(context,
+                                         {'display_name': volume_name})
+        volume = None
+        if len(volumes_list):
+            volume = volumes_list[0] 
+        return volume
+
+    def _detach_volume(self, context, share):
+        service_instance = self._get_service_instance(context,
+                                                      share['project_id'])
+        attached_volumes = [vol.id for vol in
+                self.compute_api.instance_volumes_list(context,
+                                                       service_instance['id'])]
+        volume = self._get_volume(context, share)
+        if service_instance and volume and volume['id'] in attached_volumes:
+            self.compute_api.instance_volume_detach(context,
+                                                    service_instance['id'],
+                                                    volume['id'])
+            t = time.time()
+            while time.time() - t < self.configuration.max_time_to_attach:
+                volume = self.volume_api.get(context, volume['id'])
+                if volume['status'] in ('available', 'error'):
+                    break
+                time.sleep(1)
+            else:
+                raise exception.ManilaException('Volume detach timeout')
 
     def _get_device_path(self, context, server):
         volumes = self.compute_api.instance_volumes_list(context, server['id'])
@@ -219,9 +247,27 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
         return volume 
 
-
-    def _deallocate_container(self, share_name):
-        """Deletes a logical volume for share."""
+    def _deallocate_container(self, context, share):
+        """Deletes cinder volume for share."""
+        volume_name = self.configuration.volume_name_template + share['id']
+        volumes_list = self.volume_api.get_all(context,
+                                         {'display_name': volume_name})
+        volume = None
+        if len(volumes_list):
+            volume = volumes_list[0] 
+        if volume:
+            self.volume_api.delete(context, volume['id'])
+            t = time.time()
+            while time.time() - t < self.configuration.max_time_to_attach:
+                try:
+                    volume = self.volume_api.get(context, volume['id'])
+                except Exception as e:
+                    if 'could not be found' not in e.message:
+                        raise 
+                    break
+                time.sleep(1)
+            else:
+                raise exception.ManilaException('Volume deletion error')
 
     def get_share_stats(self, refresh=False):
         """Get share status.
@@ -281,9 +327,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 #        return location
 
     def delete_share(self, context, share):
-#        self._remove_export(context, share)
-        self._delete_share(context, share)
-        self._deallocate_container(share['name'])
+        self._remove_export(context, share)
+        self._detach_volume(context, share)
+        self._deallocate_container(context, share)
 
     def _remove_export(self, ctx, share):
         """Removes an access rules for a share."""
@@ -305,40 +351,6 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _delete_share(self, context, share):
         """Delete a share."""
-        service_instance = self._get_service_instance(context,
-                                                      share['project_id'])
-        volume_name = self.configuration.volume_name_template + share['id']
-        volumes_list = self.volume_api.get_all(context,
-                                         {'display_name': volume_name})
-        volume = None
-        if len(volumes_list):
-            volume = volumes_list[0] 
-        if service_instance and volume:
-            self.compute_api.instance_volume_detach(context,
-                                                    service_instance['id'],
-                                                    volume['id'])
-            t = time.time()
-            while time.time() - t < self.configuration.max_time_to_attach:
-                volume = self.volume_api.get(context, volume['id'])
-                if volume['status'] in ('available', 'error'):
-                    break
-                time.sleep(1)
-            else:
-                raise exception.ManilaException('Volume detach timeout')
-        if volume:
-            self.volume_api.delete(context, volume['id'])
-            t = time.time()
-            while time.time() - t < self.configuration.max_time_to_attach:
-                try:
-                    volume = self.volume_api.get(context, volume['id'])
-                except Exception as e:
-                    if 'could not be found' not in e.message:
-                        raise 
-                else:
-                    break
-                time.sleep(1)
-            else:
-                raise exception.ManilaException('Volume detach timeout')
 
 
     def create_snapshot(self, context, snapshot):
