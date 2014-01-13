@@ -51,6 +51,9 @@ share_opts = [
     cfg.StrOpt('service_instance_name',
                default='manila_service_instance',
                help="Name of service instance"),
+    cfg.StrOpt('volume_name_template',
+               default='manila-',
+               help="Volume name template"),
     cfg.IntOpt('max_time_to_build_instance',
                default=120,
                help="Maximum time to wait for creating service instance"),
@@ -60,7 +63,6 @@ share_opts = [
     cfg.IntOpt('max_time_to_attach',
                default=120,
                help="Maximum time to wait for attaching cinder volume"),
-
      cfg.IntOpt('service_instance_flavor_id',
                default=42,
                help="ID of flavor, that will be used for service instance "
@@ -77,6 +79,16 @@ CONF = cfg.CONF
 CONF.register_opts(share_opts)
 lock = threading.RLock()
 
+
+def synchronized(f):
+    """Decorates function _get_domain with unique locks for each tenant
+    """
+    def wrapped_func(self, context, tenant_id, *args, **kwargs):
+        with self.tenants_locks.setdefault(tenant_id, threading.RLock()):
+            return f(self, context, tenant_id, *args, **kwargs)
+    return wrapped_func
+
+
 class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     """Executes commands relating to Shares."""
 
@@ -84,6 +96,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         """Do initialization."""
         super(GenericShareDriver, self).__init__(*args, **kwargs)
         self.db = db
+        self.tenants_locks = {}
         self.configuration.append_config_values(share_opts)
         self._helpers = None
 
@@ -111,26 +124,29 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                         self.configuration)
 
     def create_share(self, context, share):
-        with lock:
-            server = self._get_service_instance(context)
-            volume = self._allocate_container(context, share)
-            self._mount_volume(context, server, volume)
+        server = self._get_service_instance(context, share['project_id'])
+        volume = self._allocate_container(context, share)
+        self._mount_volume(context, share['project_id'], server, volume)
         return 'ololo' 
 
-    def _mount_volume(self, context, server, volume):
+    @synchronized 
+    def _mount_volume(self, context, tenant_id, server, volume):
         device_path = self._get_device_path(context, server)
-        volume = self.compute_api.instance_volume_attach(context, server['id'],
-                                                volume['id'], device_path)
-        volume = self.volume_api.get(context, volume.id)
-        t = time.time() 
+        try:
+            self.compute_api.instance_volume_attach(context, server['id'],
+                                                    volume['id'], device_path)
+        except Exception as e:
+            if 'already attached' not in e.message:
+                raise 
+
+        t = time.time()
         while time.time() - t < self.configuration.max_time_to_attach:
+            volume = self.volume_api.get(context, volume['id'])
             if volume['status'] == 'in-use':
                 break
             if volume['status'] == 'error':
                 raise exception.ManilaException('Volume error')
             time.sleep(1)
-            volume = self.volume_api.get(context,
-                    volume['id'])
         else:
             raise exception.ManilaException('Volume attach timeout')
 
@@ -146,17 +162,21 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         device_name = last_used_name[:-1] + chr(ord(last_used_name[-1]) + 1)
         return device_name 
 
-    def _get_service_instance(self, context):
+    @synchronized
+    def _get_service_instance(self, context, tenant_id, create=True):
         servers = self.compute_api.server_list(context,
                     {'name': self.configuration.service_instance_name})
         if not servers:
-            return self._create_service_instance(context)
+            if create:
+                return self._create_service_instance(context, tenant_id)
+            else:
+                return None
         elif len(servers) > 1:
             raise exception.ManilaException('Ambigious service instances')
         else:
             return servers[0]
 
-    def _create_service_instance(self, context):
+    def _create_service_instance(self, context, tenant_id):
         images = [image['id'] for image in self.image_api.detail(context)
                 if image['name'] == self.configuration.service_image_name]
         if not images:
@@ -183,7 +203,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return service_instance
 
     def _allocate_container(self, context, share):
-        volume = self.volume_api.create(context, share['size'], '', '')
+        volume = self.volume_api.create(context, share['size'],
+                     self.configuration.volume_name_template + share['id'], '')
 
         t = time.time() 
         while time.time() - t < self.configuration.max_time_to_create_volume:
@@ -260,10 +281,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 #        return location
 
     def delete_share(self, context, share):
-        pass
 #        self._remove_export(context, share)
-#        self._delete_share(context, share)
-#        self._deallocate_container(share['name'])
+        self._delete_share(context, share)
+        self._deallocate_container(share['name'])
 
     def _remove_export(self, ctx, share):
         """Removes an access rules for a share."""
@@ -283,6 +303,44 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 #            except OSError:
 #                LOG.info('Unable to delete %s', mount_path)
 
+    def _delete_share(self, context, share):
+        """Delete a share."""
+        service_instance = self._get_service_instance(context,
+                                                      share['project_id'])
+        volume_name = self.configuration.volume_name_template + share['id']
+        volumes_list = self.volume_api.get_all(context,
+                                         {'display_name': volume_name})
+        volume = None
+        if len(volumes_list):
+            volume = volumes_list[0] 
+        if service_instance and volume:
+            self.compute_api.instance_volume_detach(context,
+                                                    service_instance['id'],
+                                                    volume['id'])
+            t = time.time()
+            while time.time() - t < self.configuration.max_time_to_attach:
+                volume = self.volume_api.get(context, volume['id'])
+                if volume['status'] in ('available', 'error'):
+                    break
+                time.sleep(1)
+            else:
+                raise exception.ManilaException('Volume detach timeout')
+        if volume:
+            self.volume_api.delete(context, volume['id'])
+            t = time.time()
+            while time.time() - t < self.configuration.max_time_to_attach:
+                try:
+                    volume = self.volume_api.get(context, volume['id'])
+                except Exception as e:
+                    if 'could not be found' not in e.message:
+                        raise 
+                else:
+                    break
+                time.sleep(1)
+            else:
+                raise exception.ManilaException('Volume detach timeout')
+
+
     def create_snapshot(self, context, snapshot):
         """Creates a snapshot."""
 #        orig_lv_name = "%s/%s" % (self.configuration.share_volume_group,
@@ -291,23 +349,15 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 #                          '--name', snapshot['name'],
 #                          '--snapshot', orig_lv_name, run_as_root=True)
 #
-    def ensure_share(self, ctx, share):
+    def ensure_share(self, context, share):
         """Ensure that storage are mounted and exported."""
-#        device_name = self._local_path(share)
-#        location = self._mount_device(share, device_name)
-#        self._get_helper(share).create_export(location, share['name'],
-#                                              recreate=True)
+#        import pdb; pdb.set_trace()
 #
-    def _delete_share(self, ctx, share):
-        """Delete a share."""
-#        try:
-#            location = self._get_mount_path(share)
-#            self._get_helper(share).remove_export(location, share['name'])
-#        except exception.ProcessExecutionError:
-#            LOG.info("Can't remove share %r" % share['id'])
-#        except exception.InvalidShare, exc:
-#            LOG.info(exc.message)
-#
+#        server = self._get_service_instance(context, share['project_id'])
+#        volume = self._allocate_container(context, share)
+#        self._mount_volume(context, share['project_id'], server, volume)
+
+
     def delete_snapshot(self, context, snapshot):
         """Deletes a snapshot."""
 #        self._deallocate_container(snapshot['name'])
