@@ -83,9 +83,10 @@ lock = threading.RLock()
 def synchronized(f):
     """Decorates function with unique locks for each tenant
     """
-    def wrapped_func(self, context, tenant_id, *args, **kwargs):
+    def wrapped_func(self, context, share, *args, **kwargs):
+        tenant_id = share['project_id']
         with self.tenants_locks.setdefault(tenant_id, threading.RLock()):
-            return f(self, context, tenant_id, *args, **kwargs)
+            return f(self, context, share, *args, **kwargs)
     return wrapped_func
 
 
@@ -124,13 +125,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                         self.configuration)
 
     def create_share(self, context, share):
-        server = self._get_service_instance(context, share['project_id'])
+        server = self._get_service_instance(context, share)
         volume = self._allocate_container(context, share)
-        self._attach_volume(context, share['project_id'], server, volume)
+        self._attach_volume(context, share, server, volume)
         return server['networks'].values()[0][0]
 
     @synchronized 
-    def _attach_volume(self, context, tenant_id, server, volume):
+    def _attach_volume(self, context, share, server, volume):
         device_path = self._get_device_path(context, server)
         try:
             self.compute_api.instance_volume_attach(context, server['id'],
@@ -161,9 +162,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             volume = volumes_list[0] 
         return volume
 
+    @synchronized
     def _detach_volume(self, context, share):
         service_instance = self._get_service_instance(context,
-                                                      share['project_id'])
+                                                      share)
         attached_volumes = [vol.id for vol in
                 self.compute_api.instance_volumes_list(context,
                                                        service_instance['id'])]
@@ -191,12 +193,12 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return device_name 
 
     @synchronized
-    def _get_service_instance(self, context, tenant_id, create=True):
+    def _get_service_instance(self, context, share, create=True):
         servers = self.compute_api.server_list(context,
                     {'name': self.configuration.service_instance_name})
         if not servers:
             if create:
-                return self._create_service_instance(context, tenant_id)
+                return self._create_service_instance(context)
             else:
                 return None
         elif len(servers) > 1:
@@ -204,7 +206,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             return servers[0]
 
-    def _create_service_instance(self, context, tenant_id):
+    def _create_service_instance(self, context):
         images = [image['id'] for image in self.image_api.detail(context)
                 if image['name'] == self.configuration.service_image_name]
         if not images:
