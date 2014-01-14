@@ -32,7 +32,7 @@ from manila.image import glance
 from manila.openstack.common import importutils
 from manila.openstack.common import log as logging
 from manila.share import driver
-from manila import volume 
+from manila import volume
 from manila import utils
 
 from oslo.config import cfg
@@ -52,7 +52,10 @@ share_opts = [
                default='manila_service_instance',
                help="Name of service instance"),
     cfg.StrOpt('volume_name_template',
-               default='manila-',
+               default='manila-share-',
+               help="Volume name template"),
+    cfg.StrOpt('volume_snapshot_name_template',
+               default='manila-snapshot-',
                help="Volume name template"),
     cfg.IntOpt('max_time_to_build_instance',
                default=120,
@@ -77,7 +80,6 @@ share_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(share_opts)
-lock = threading.RLock()
 
 
 def synchronized(f):
@@ -130,7 +132,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self._attach_volume(context, share, server, volume)
         return server['networks'].values()[0][0]
 
-    @synchronized 
+    @synchronized
     def _attach_volume(self, context, share, server, volume):
         device_path = self._get_device_path(context, server)
         try:
@@ -138,7 +140,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                     volume['id'], device_path)
         except Exception as e:
             if 'already attached' not in e.message:
-                raise 
+                raise
 
         t = time.time()
         while time.time() - t < self.configuration.max_time_to_attach:
@@ -151,16 +153,26 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             raise exception.ManilaException('Volume attach timeout')
 
-        return volume 
+        return volume
 
-    def _get_volume(self, context, share):
-        volume_name = self.configuration.volume_name_template + share['id']
+    def _get_volume(self, context, share_id):
+        volume_name = self.configuration.volume_name_template + share_id
         volumes_list = self.volume_api.get_all(context,
                                          {'display_name': volume_name})
         volume = None
         if len(volumes_list):
-            volume = volumes_list[0] 
+            volume = volumes_list[0]
         return volume
+
+    def _get_volume_snapshot(self, context, snapshot_id):
+        volume_snapshot_name = self.configuration.\
+                volume_snapshot_name_template + snapshot_id
+        volume_snapshot_list = self.volume_api.get_all_snapshots(context,
+                                        {'display_name': volume_snapshot_name})
+        volume_snapshot = None
+        if len(volume_snapshot_list):
+            volume_snapshot = volume_snapshot_list[0]
+        return volume_snapshot 
 
     @synchronized
     def _detach_volume(self, context, share):
@@ -169,7 +181,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         attached_volumes = [vol.id for vol in
                 self.compute_api.instance_volumes_list(context,
                                                        service_instance['id'])]
-        volume = self._get_volume(context, share)
+        volume = self._get_volume(context, share['id'])
         if service_instance and volume and volume['id'] in attached_volumes:
             self.compute_api.instance_volume_detach(context,
                                                     service_instance['id'],
@@ -190,7 +202,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         last_used_name = sorted([volume.device for volume in volumes
                 if '/dev/vd' in volume.device])[-1]
         device_name = last_used_name[:-1] + chr(ord(last_used_name[-1]) + 1)
-        return device_name 
+        return device_name
 
     @synchronized
     def _get_service_instance(self, context, share, create=True):
@@ -220,7 +232,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                 self.configuration.service_instance_flavor_id,
                                 None, None, None)
 
-        t = time.time() 
+        t = time.time()
         while time.time() - t < self.configuration.max_time_to_build_instance:
             if service_instance['status'] == 'ACTIVE':
                 break
@@ -236,7 +248,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         volume = self.volume_api.create(context, share['size'],
                      self.configuration.volume_name_template + share['id'], '')
 
-        t = time.time() 
+        t = time.time()
         while time.time() - t < self.configuration.max_time_to_create_volume:
             if volume['status'] == 'available':
                 break
@@ -247,7 +259,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             raise exception.ManilaException('Volume creating timeout')
 
-        return volume 
+        return volume
 
     def _deallocate_container(self, context, share):
         """Deletes cinder volume for share."""
@@ -256,7 +268,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                          {'display_name': volume_name})
         volume = None
         if len(volumes_list):
-            volume = volumes_list[0] 
+            volume = volumes_list[0]
         if volume:
             self.volume_api.delete(context, volume['id'])
             t = time.time()
@@ -266,7 +278,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                     volume = self.volume_api.get(context, volume['id'])
                 except Exception as e:
                     if 'could not be found' not in e.message:
-                        raise 
+                        raise
                     break
                 time.sleep(1)
             else:
@@ -357,12 +369,19 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def create_snapshot(self, context, snapshot):
         """Creates a snapshot."""
-#        orig_lv_name = "%s/%s" % (self.configuration.share_volume_group,
-#                                  snapshot['share_name'])
-#        self._try_execute('lvcreate', '-L', '%sG' % snapshot['share_size'],
-#                          '--name', snapshot['name'],
-#                          '--snapshot', orig_lv_name, run_as_root=True)
-#
+        volume = self._get_volume(context, snapshot['share_id'])
+        volume_snapshot_name = self.configuration.\
+                volume_snapshot_name_template + snapshot['id']
+        self.volume_api.create_snapshot_force(context,
+                                              volume['id'],
+                                              volume_snapshot_name,
+                                              '')
+
+    def delete_snapshot(self, context, snapshot):
+        """Deletes a snapshot."""
+        volume_snapshot = self._get_volume_snapshot(context, snapshot['id'])
+        self.volume_api.delete_snapshot(context, volume_snapshot['id'])
+
     def ensure_share(self, context, share):
         """Ensure that storage are mounted and exported."""
 
@@ -370,13 +389,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 #        volume = self._allocate_container(context, share)
 #        self._mount_volume(context, share['project_id'], server, volume)
 
-
-    def delete_snapshot(self, context, snapshot):
-        """Deletes a snapshot."""
-#        self._deallocate_container(snapshot['name'])
-#
-#    def allow_access(self, ctx, share, access):
-#        """Allow access to the share."""
+    def allow_access(self, ctx, share, access):
+        """Allow access to the share."""
 #        location = self._get_mount_path(share)
 #        self._get_helper(share).allow_access(location, share['name'],
 #                                             access['access_type'],
@@ -468,8 +482,8 @@ class NFSHelper(NASHelperBase):
 #        """Deny access to the host."""
 #        self._execute('exportfs', '-u', ':'.join([access, local_path]),
 #                      run_as_root=True, check_exit_code=False)
-#
-#
+
+
 class CIFSHelper(NASHelperBase):
     """Class provides functionality to operate with cifs shares"""
 #
@@ -597,8 +611,8 @@ class CIFSHelper(NASHelperBase):
 #        #restart daemon if necessary
 #        if restart:
 #            self._execute(*'pkill -HUP smbd'.split(), run_as_root=True)
-#
-#
+
+
 class CIFSNetConfHelper(NASHelperBase):
     """Manage shares in samba server by net conf tool.
 #
