@@ -127,7 +127,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         server = self._get_service_instance(context, share['project_id'])
         volume = self._allocate_container(context, share)
         self._attach_volume(context, share['project_id'], server, volume)
-        return 'ololo' 
+        return server['networks'].values()[0][0]
 
     @synchronized 
     def _attach_volume(self, context, tenant_id, server, volume):
@@ -258,11 +258,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if volume:
             self.volume_api.delete(context, volume['id'])
             t = time.time()
-            while time.time() - t < self.configuration.max_time_to_attach:
+            while time.time() - t < self.configuration.\
+                                                    max_time_to_create_volume:
                 try:
                     volume = self.volume_api.get(context, volume['id'])
                 except Exception as e:
-                    LOG.error('_deallocate_in_while')
                     if 'could not be found' not in e.message:
                         raise 
                     break
@@ -353,7 +353,6 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def _delete_share(self, context, share):
         """Delete a share."""
 
-
     def create_snapshot(self, context, snapshot):
         """Creates a snapshot."""
 #        orig_lv_name = "%s/%s" % (self.configuration.share_volume_group,
@@ -364,8 +363,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 #
     def ensure_share(self, context, share):
         """Ensure that storage are mounted and exported."""
-#        import pdb; pdb.set_trace()
-#
+
 #        server = self._get_service_instance(context, share['project_id'])
 #        volume = self._allocate_container(context, share)
 #        self._mount_volume(context, share['project_id'], server, volume)
