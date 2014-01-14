@@ -244,9 +244,14 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
         return service_instance
 
-    def _allocate_container(self, context, share):
+    def _allocate_container(self, context, share, snapshot=None):
+        volume_snapshot = None
+        if snapshot:
+            volume_snapshot = self._get_volume_snapshot(context,
+                                                        snapshot['id'])
         volume = self.volume_api.create(context, share['size'],
-                     self.configuration.volume_name_template + share['id'], '')
+                     self.configuration.volume_name_template + share['id'], '',
+                     snapshot=volume_snapshot)
 
         t = time.time()
         while time.time() - t < self.configuration.max_time_to_create_volume:
@@ -331,15 +336,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def create_share_from_snapshot(self, context, share, snapshot):
         """Is called to create share from snapshot."""
-#        self._allocate_container(share)
-#        device_name = self._local_path(snapshot)
-#        self._copy_volume(device_name, self._local_path(share),
-#                          snapshot['share_size'])
-#        mount_path = self._get_mount_path(share)
-#        location = self._get_helper(share).create_export(mount_path,
-#                                                         share['name'])
-#        self._mount_device(share, device_name)
-#        return location
+        server = self._get_service_instance(context, share)
+        volume = self._allocate_container(context, share, snapshot)
+        self._attach_volume(context, share, server, volume)
+        return server['networks'].values()[0][0]
+
 
     def delete_share(self, context, share):
         self._remove_export(context, share)
@@ -372,19 +373,31 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         volume = self._get_volume(context, snapshot['share_id'])
         volume_snapshot_name = self.configuration.\
                 volume_snapshot_name_template + snapshot['id']
-        self.volume_api.create_snapshot_force(context,
+        volume_snapshot = self.volume_api.create_snapshot_force(context,
                                               volume['id'],
                                               volume_snapshot_name,
                                               '')
+        t = time.time()
+        while time.time() - t < self.configuration.max_time_to_create_volume:
+            if volume_snapshot['status'] == 'available':
+                break
+            if volume_snapshot['status'] == 'error':
+                raise exception.\
+                        ManilaException('Volume snapshot creating error')
+            time.sleep(1)
+            volume_snapshot = self.volume_api.get_snapshot(context,
+                                                volume_snapshot['id'])
+        else:
+            raise exception.ManilaException('Volume snapshot creating timeout')
 
     def delete_snapshot(self, context, snapshot):
         """Deletes a snapshot."""
         volume_snapshot = self._get_volume_snapshot(context, snapshot['id'])
-        self.volume_api.delete_snapshot(context, volume_snapshot['id'])
+        if volume_snapshot:
+            self.volume_api.delete_snapshot(context, volume_snapshot['id'])
 
     def ensure_share(self, context, share):
         """Ensure that storage are mounted and exported."""
-
 #        server = self._get_service_instance(context, share['project_id'])
 #        volume = self._allocate_container(context, share)
 #        self._mount_volume(context, share['project_id'], server, volume)
