@@ -144,10 +144,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _format_device(self, server, volume):
         command = ['sudo', 'mkfs.ext4', volume['mountpoint']]
-        self._ssh_exec('qdhcp-ac0cf9dc-fcf9-4060-9b7e-509a14d9d012',
-                       server['networks'].values()[0][0], command)
+        self._ssh_exec(server, command)
 
-    def _ssh_exec(self, netns, ip, command):
+    def _ssh_exec(self, server, command):
+        ip = server['networks'].values()[0][0]
+        net_id = [port['network_id'] for port in
+                  self.network_api.list_ports({'device_id': server['id']})][0]
+        netns = 'qdhcp-' + net_id
         user = self.configuration.service_instance_user
         cmd = ['ip', 'netns', 'exec', netns, 'ssh', user + '@' + ip,
                '-o StrictHostKeyChecking=no']
@@ -159,11 +162,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         mount_path = os.path.join(self.configuration.share_mount_path,
                                   share['id'])
         command = ['sudo', 'mkdir', '-p', mount_path]
-        self._ssh_exec('qdhcp-ac0cf9dc-fcf9-4060-9b7e-509a14d9d012',
-                       server['networks'].values()[0][0], command)
+        self._ssh_exec(server, command)
         command = ['sudo', 'mount', volume['mountpoint'], mount_path]
-        self._ssh_exec('qdhcp-ac0cf9dc-fcf9-4060-9b7e-509a14d9d012',
-                       server['networks'].values()[0][0], command)
+        self._ssh_exec(server, command)
 
     @synchronized
     def _attach_volume(self, context, share, server, volume):
