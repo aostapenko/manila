@@ -29,6 +29,7 @@ import threading
 from manila import compute
 from manila import exception
 from manila.image import glance
+from manila import network
 from manila.openstack.common import importutils
 from manila.openstack.common import log as logging
 from manila.share import driver
@@ -45,12 +46,15 @@ share_opts = [
                default='$state_path/smb.conf',
                help="Path to smb config"),
     cfg.StrOpt('service_image_name',
-               default='cirros-0.3.1-x86_64-uec',
+               default='manila-service-image',
                help="Name of image in glance, that will be used to create "
                "service instance"),
     cfg.StrOpt('service_instance_name',
                default='manila_service_instance',
                help="Name of service instance"),
+    cfg.StrOpt('service_instance_user',
+               default='ubuntu',
+               help="User in service instance"),
     cfg.StrOpt('volume_name_template',
                default='manila-share-',
                help="Volume name template"),
@@ -58,7 +62,10 @@ share_opts = [
                default='manila-snapshot-',
                help="Volume name template"),
     cfg.IntOpt('max_time_to_build_instance',
-               default=120,
+               default=300,
+               help="Maximum time to wait for creating service instance"),
+    cfg.StrOpt('share_mount_path',
+               default='/shares',
                help="Maximum time to wait for creating service instance"),
     cfg.IntOpt('max_time_to_create_volume',
                default=120,
@@ -66,8 +73,8 @@ share_opts = [
     cfg.IntOpt('max_time_to_attach',
                default=120,
                help="Maximum time to wait for attaching cinder volume"),
-     cfg.IntOpt('service_instance_flavor_id',
-               default=42,
+    cfg.IntOpt('service_instance_flavor_id',
+               default=100,
                help="ID of flavor, that will be used for service instance "
                "creation"),
     cfg.ListOpt('share_lvm_helpers',
@@ -112,6 +119,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         super(GenericShareDriver, self).do_setup(context)
         self.compute_api = compute.API()
         self.volume_api = volume.API()
+        self.network_api = network.API()
         self.image_api = glance.get_default_image_service()
         self._setup_helpers()
         for helper in self._helpers.values():
@@ -129,8 +137,33 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def create_share(self, context, share):
         server = self._get_service_instance(context, share)
         volume = self._allocate_container(context, share)
-        self._attach_volume(context, share, server, volume)
+        volume = self._attach_volume(context, share, server, volume)
+        self._format_device(server, volume)
+        self._mount_device(context, share, server, volume)
         return server['networks'].values()[0][0]
+
+    def _format_device(self, server, volume):
+        command = ['sudo', 'mkfs.ext4', volume['mountpoint']]
+        self._ssh_exec('qdhcp-ac0cf9dc-fcf9-4060-9b7e-509a14d9d012',
+                       server['networks'].values()[0][0], command)
+
+    def _ssh_exec(self, netns, ip, command):
+        user = self.configuration.service_instance_user
+        cmd = ['ip', 'netns', 'exec', netns, 'ssh', user + '@' + ip,
+               '-o StrictHostKeyChecking=no']
+        cmd.extend(command)
+        self._execute(*cmd, run_as_root=True)
+
+    @synchronized
+    def _mount_device(self, context, share, server, volume):
+        mount_path = os.path.join(self.configuration.share_mount_path,
+                                  share['id'])
+        command = ['sudo', 'mkdir', '-p', mount_path]
+        self._ssh_exec('qdhcp-ac0cf9dc-fcf9-4060-9b7e-509a14d9d012',
+                       server['networks'].values()[0][0], command)
+        command = ['sudo', 'mount', volume['mountpoint'], mount_path]
+        self._ssh_exec('qdhcp-ac0cf9dc-fcf9-4060-9b7e-509a14d9d012',
+                       server['networks'].values()[0][0], command)
 
     @synchronized
     def _attach_volume(self, context, share, server, volume):
@@ -177,7 +210,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     @synchronized
     def _detach_volume(self, context, share):
         service_instance = self._get_service_instance(context,
-                                                      share)
+                                                      share,
+                                                      create=False)
+        if not service_instance:
+            return
         attached_volumes = [vol.id for vol in
                 self.compute_api.instance_volumes_list(context,
                                                        service_instance['id'])]
@@ -236,9 +272,15 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         while time.time() - t < self.configuration.max_time_to_build_instance:
             if service_instance['status'] == 'ACTIVE':
                 break
+            if service_instance['status'] == 'ERROR':
+                raise exception.\
+                        ManilaException('Service instance creating error')
             time.sleep(1)
-            service_instance = self.compute_api.server_get(context,
-                    service_instance['id'])
+            try:
+                service_instance = self.compute_api.server_get(context,
+                                    service_instance['id'])
+            except Exception as e:
+                LOG.debug(e.message)
         else:
             raise exception.ManilaException('Server waiting timeout')
 
