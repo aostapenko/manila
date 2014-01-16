@@ -140,7 +140,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         volume = self._attach_volume(context, share, server, volume)
         self._format_device(server, volume)
         self._mount_device(context, share, server, volume)
-        return server['networks'].values()[0][0]
+        server_ip = server['networks'].values()[0][0]
+        location = self._get_helper(share).create_export(server_ip,
+                                                         share['name'])
+        return location 
 
     def _format_device(self, server, volume):
         command = ['sudo', 'mkfs.ext4', volume['mountpoint']]
@@ -462,13 +465,12 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 #                                            access['access_to'])
 #
     def _get_helper(self, share):
-        pass
-#        if share['share_proto'].startswith('NFS'):
-#            return self._helpers['NFS']
-#        elif share['share_proto'].startswith('CIFS'):
-#            return self._helpers['CIFS']
-#        else:
-#            raise exception.InvalidShare(reason='Wrong share type')
+        if share['share_proto'].startswith('NFS'):
+            return self._helpers['NFS']
+        elif share['share_proto'].startswith('CIFS'):
+            return self._helpers['CIFS']
+        else:
+            raise exception.InvalidShare(reason='Wrong share type')
 
 
 class NASHelperBase(object):
@@ -502,17 +504,18 @@ class NASHelperBase(object):
 class NFSHelper(NASHelperBase):
     """Interface to work with share."""
 
-#    def __init__(self, execute, config_object):
-#        super(NFSHelper, self).__init__(execute, config_object)
+    def __init__(self, execute, config_object):
+        super(NFSHelper, self).__init__(execute, config_object)
 #        try:
 #            self._execute('exportfs', check_exit_code=True,
 #                          run_as_root=True)
 #        except exception.ProcessExecutionError:
 #            raise exception.Error('NFS server not found')
-#
-#    def create_export(self, local_path, share_name, recreate=False):
-#        """Create new export, delete old one if exists."""
-#        return ':'.join([self.configuration.share_export_ip, local_path])
+
+    def create_export(self, server_ip, share_name, recreate=False):
+        """Create new export, delete old one if exists."""
+        return ':'.join([server_ip,
+            os.path.join(self.configuration.share_mount_path, share_name)])
 #
 #    def remove_export(self, local_path, share_name):
 #        """Remove export."""
