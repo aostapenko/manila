@@ -62,7 +62,7 @@ share_opts = [
                default='manila-snapshot-',
                help="Volume name template"),
     cfg.IntOpt('max_time_to_build_instance',
-               default=300,
+               default=600,
                help="Maximum time to wait for creating service instance"),
     cfg.StrOpt('share_mount_path',
                default='/shares',
@@ -149,7 +149,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def _ssh_exec(self, server, command):
         ip = server['networks'].values()[0][0]
         net_id = [port['network_id'] for port in
-                  self.network_api.list_ports({'device_id': server['id']})][0]
+                  self.network_api.list_ports(device_id=server['id'])][0]
         netns = 'qdhcp-' + net_id
         user = self.configuration.service_instance_user
         cmd = ['ip', 'netns', 'exec', netns, 'ssh', user + '@' + ip,
@@ -157,14 +157,22 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         cmd.extend(command)
         self._execute(*cmd, run_as_root=True)
 
-    @synchronized
     def _mount_device(self, context, share, server, volume):
         mount_path = os.path.join(self.configuration.share_mount_path,
                                   share['id'])
-        command = ['sudo', 'mkdir', '-p', mount_path]
+        command = ['sudo', 'mkdir', '-p', mount_path, ';']
+        command.extend(['sudo', 'mount', volume['mountpoint'], mount_path])
         self._ssh_exec(server, command)
-        command = ['sudo', 'mount', volume['mountpoint'], mount_path]
-        self._ssh_exec(server, command)
+
+    def _unmount_device(self, context, share, server):
+        mount_path = os.path.join(self.configuration.share_mount_path,
+                                  share['id'])
+        command = ['sudo', 'umount', mount_path, ';']
+        command.extend(['sudo', 'rmdir', mount_path])
+        try:
+            self._ssh_exec(server, command)
+        except Exception as e:
+            LOG.debug(e)
 
     @synchronized
     def _attach_volume(self, context, share, server, volume):
@@ -209,19 +217,14 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return volume_snapshot 
 
     @synchronized
-    def _detach_volume(self, context, share):
-        service_instance = self._get_service_instance(context,
-                                                      share,
-                                                      create=False)
-        if not service_instance:
-            return
+    def _detach_volume(self, context, share, server):
         attached_volumes = [vol.id for vol in
                 self.compute_api.instance_volumes_list(context,
-                                                       service_instance['id'])]
+                                                       server['id'])]
         volume = self._get_volume(context, share['id'])
-        if service_instance and volume and volume['id'] in attached_volumes:
+        if volume and volume['id'] in attached_volumes:
             self.compute_api.instance_volume_detach(context,
-                                                    service_instance['id'],
+                                                    server['id'],
                                                     volume['id'])
             t = time.time()
             while time.time() - t < self.configuration.max_time_to_attach:
@@ -284,8 +287,20 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 LOG.debug(e.message)
         else:
             raise exception.ManilaException('Server waiting timeout')
+        
+        t = time.time()
+        while time.time() - t < self.configuration.max_time_to_build_instance:
+            LOG.debug('Checking server availability')
+            try:
+                self._ssh_exec(service_instance, ['echo', 'Hello'])
+                return service_instance
+            except Exception as e:
+                LOG.debug(e)
+                LOG.debug('Server is not available though ssh. Waiting...')
+                time.sleep(5)
+        else:
+            raise exception.ManilaException('Server waiting timeout')
 
-        return service_instance
 
     def _allocate_container(self, context, share, snapshot=None):
         volume_snapshot = None
@@ -386,30 +401,17 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
 
     def delete_share(self, context, share):
-        self._remove_export(context, share)
-        self._detach_volume(context, share)
+        server = self._get_service_instance(context,
+                                            share,
+                                            create=False)
+        if server:
+            self._remove_export(context, share, server)
+            self._unmount_device(context, share, server)
+            self._detach_volume(context, share, server)
         self._deallocate_container(context, share)
 
-    def _remove_export(self, ctx, share):
-        """Removes an access rules for a share."""
-#        mount_path = self._get_mount_path(share)
-#        if os.path.exists(mount_path):
-#            #umount, may be busy
-#            try:
-#                self._execute('umount', '-f', mount_path, run_as_root=True)
-#            except exception.ProcessExecutionError, exc:
-#                if 'device is busy' in str(exc):
-#                    raise exception.ShareIsBusy(share_name=share['name'])
-#                else:
-#                    LOG.info('Unable to umount: %s', exc)
-#            #remove dir
-#            try:
-#                os.rmdir(mount_path)
-#            except OSError:
-#                LOG.info('Unable to delete %s', mount_path)
-
-    def _delete_share(self, context, share):
-        """Delete a share."""
+    def _remove_export(self, context, share, server):
+        """."""
 
     def create_snapshot(self, context, snapshot):
         """Creates a snapshot."""
