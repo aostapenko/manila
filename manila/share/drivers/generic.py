@@ -149,33 +149,23 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         command = ['sudo', 'mkfs.ext4', volume['mountpoint']]
         self._ssh_exec(server, command)
 
-    def _ssh_exec(self, server, command):
-        ip = server['networks'].values()[0][0]
-        net_id = [port['network_id'] for port in
-                  self.network_api.list_ports(device_id=server['id'])][0]
-        netns = 'qdhcp-' + net_id
-        user = self.configuration.service_instance_user
-        cmd = ['ip', 'netns', 'exec', netns, 'ssh', user + '@' + ip,
-               '-o StrictHostKeyChecking=no']
-        cmd.extend(command)
-        self._execute(*cmd, run_as_root=True)
-
     def _mount_device(self, context, share, server, volume):
-        mount_path = os.path.join(self.configuration.share_mount_path,
-                                  share['id'])
+        mount_path = self._get_mount_path(share)
         command = ['sudo', 'mkdir', '-p', mount_path, ';']
         command.extend(['sudo', 'mount', volume['mountpoint'], mount_path])
         self._ssh_exec(server, command)
 
     def _unmount_device(self, context, share, server):
-        mount_path = os.path.join(self.configuration.share_mount_path,
-                                  share['id'])
+        mount_path = self._get_mount_path(share)
         command = ['sudo', 'umount', mount_path, ';']
         command.extend(['sudo', 'rmdir', mount_path])
         try:
             self._ssh_exec(server, command)
         except Exception as e:
             LOG.debug(e)
+
+    def _get_mount_path(self, share):
+        return os.path.join(self.configuration.share_mount_path, share['name'])
 
     @synchronized
     def _attach_volume(self, context, share, server, volume):
@@ -471,6 +461,17 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             return self._helpers['CIFS']
         else:
             raise exception.InvalidShare(reason='Wrong share type')
+
+    def _ssh_exec(self, server, command):
+        ip = server['networks'].values()[0][0]
+        net_id = [port['network_id'] for port in
+                  self.network_api.list_ports(device_id=server['id'])][0]
+        netns = 'qdhcp-' + net_id
+        user = self.configuration.service_instance_user
+        cmd = ['ip', 'netns', 'exec', netns, 'ssh', user + '@' + ip,
+               '-o StrictHostKeyChecking=no']
+        cmd.extend(command)
+        self._execute(*cmd, run_as_root=True)
 
 
 class NASHelperBase(object):
