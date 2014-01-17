@@ -87,7 +87,7 @@ share_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(share_opts)
-
+network_api = network.API()
 
 def synchronized(f):
     """Decorates function with unique locks for each tenant
@@ -97,6 +97,22 @@ def synchronized(f):
         with self.tenants_locks.setdefault(tenant_id, threading.RLock()):
             return f(self, context, share, *args, **kwargs)
     return wrapped_func
+
+
+def _ssh_exec(server, command, execute):
+    ip = _get_server_ip(server)
+    net_id = [port['network_id'] for port in
+              network_api.list_ports(device_id=server['id'])][0]
+    netns = 'qdhcp-' + net_id
+    user = CONF.service_instance_user
+    cmd = ['ip', 'netns', 'exec', netns, 'ssh', user + '@' + ip,
+           '-o StrictHostKeyChecking=no']
+    cmd.extend(command)
+    return execute(*cmd, run_as_root=True)
+
+
+def _get_server_ip(server):
+    return server['networks'].values()[0][0]
 
 
 class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
@@ -119,7 +135,6 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         super(GenericShareDriver, self).do_setup(context)
         self.compute_api = compute.API()
         self.volume_api = volume.API()
-        self.network_api = network.API()
         self.image_api = glance.get_default_image_service()
         self._setup_helpers()
         for helper in self._helpers.values():
@@ -140,27 +155,26 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         volume = self._attach_volume(context, share, server, volume)
         self._format_device(server, volume)
         self._mount_device(context, share, server, volume)
-        server_ip = server['networks'].values()[0][0]
-        location = self._get_helper(share).create_export(server_ip,
+        location = self._get_helper(share).create_export(server,
                                                          share['name'])
-        return location 
+        return location
 
     def _format_device(self, server, volume):
         command = ['sudo', 'mkfs.ext4', volume['mountpoint']]
-        self._ssh_exec(server, command)
+        _ssh_exec(server, command, self._execute)
 
     def _mount_device(self, context, share, server, volume):
         mount_path = self._get_mount_path(share)
         command = ['sudo', 'mkdir', '-p', mount_path, ';']
         command.extend(['sudo', 'mount', volume['mountpoint'], mount_path])
-        self._ssh_exec(server, command)
+        _ssh_exec(server, command, self._execute)
 
     def _unmount_device(self, context, share, server):
         mount_path = self._get_mount_path(share)
         command = ['sudo', 'umount', mount_path, ';']
         command.extend(['sudo', 'rmdir', mount_path])
         try:
-            self._ssh_exec(server, command)
+            _ssh_exec(server, command, self._execute)
         except Exception as e:
             LOG.debug(e)
 
@@ -207,7 +221,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         volume_snapshot = None
         if len(volume_snapshot_list):
             volume_snapshot = volume_snapshot_list[0]
-        return volume_snapshot 
+        return volume_snapshot
 
     @synchronized
     def _detach_volume(self, context, share, server):
@@ -280,20 +294,19 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 LOG.debug(e.message)
         else:
             raise exception.ManilaException('Server waiting timeout')
-        
+
         t = time.time()
         while time.time() - t < self.configuration.max_time_to_build_instance:
             LOG.debug('Checking server availability')
             try:
-                self._ssh_exec(service_instance, ['echo', 'Hello'])
+                _ssh_exec(service_instance, ['echo', 'Hello'], self._execute)
                 return service_instance
             except Exception as e:
                 LOG.debug(e)
-                LOG.debug('Server is not available though ssh. Waiting...')
+                LOG.debug('Server is not available through ssh. Waiting...')
                 time.sleep(5)
         else:
             raise exception.ManilaException('Server waiting timeout')
-
 
     def _allocate_container(self, context, share, snapshot=None):
         volume_snapshot = None
@@ -392,19 +405,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self._attach_volume(context, share, server, volume)
         return server['networks'].values()[0][0]
 
-
     def delete_share(self, context, share):
-        server = self._get_service_instance(context,
-                                            share,
-                                            create=False)
+        server = self._get_service_instance(context, share, create=False)
         if server:
-            self._remove_export(context, share, server)
+            self._get_helper(share).remove_export(server, share['name'])
             self._unmount_device(context, share, server)
             self._detach_volume(context, share, server)
         self._deallocate_container(context, share)
-
-    def _remove_export(self, context, share, server):
-        """."""
 
     def create_snapshot(self, context, snapshot):
         """Creates a snapshot."""
@@ -440,20 +447,21 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 #        volume = self._allocate_container(context, share)
 #        self._mount_volume(context, share['project_id'], server, volume)
 
-    def allow_access(self, ctx, share, access):
+    def allow_access(self, context, share, access):
         """Allow access to the share."""
-#        location = self._get_mount_path(share)
-#        self._get_helper(share).allow_access(location, share['name'],
-#                                             access['access_type'],
-#                                             access['access_to'])
-#
-    def deny_access(self, ctx, share, access):
+        server = self._get_service_instance(context, share)
+        self._get_helper(share).allow_access(server, share['name'],
+                                             access['access_type'],
+                                             access['access_to'])
+
+    def deny_access(self, context, share, access):
         """Allow access to the share."""
-#        location = self._get_mount_path(share)
-#        self._get_helper(share).deny_access(location, share['name'],
-#                                            access['access_type'],
-#                                            access['access_to'])
-#
+        server = self._get_service_instance(context, share)
+        if server:
+            self._get_helper(share).deny_access(server, share['name'],
+                                                access['access_type'],
+                                                access['access_to'])
+
     def _get_helper(self, share):
         if share['share_proto'].startswith('NFS'):
             return self._helpers['NFS']
@@ -461,17 +469,6 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             return self._helpers['CIFS']
         else:
             raise exception.InvalidShare(reason='Wrong share type')
-
-    def _ssh_exec(self, server, command):
-        ip = server['networks'].values()[0][0]
-        net_id = [port['network_id'] for port in
-                  self.network_api.list_ports(device_id=server['id'])][0]
-        netns = 'qdhcp-' + net_id
-        user = self.configuration.service_instance_user
-        cmd = ['ip', 'netns', 'exec', netns, 'ssh', user + '@' + ip,
-               '-o StrictHostKeyChecking=no']
-        cmd.extend(command)
-        self._execute(*cmd, run_as_root=True)
 
 
 class NASHelperBase(object):
@@ -484,15 +481,15 @@ class NASHelperBase(object):
     def init(self):
         pass
 
-    def create_export(self, local_path, share_name, recreate=False):
+    def create_export(self, server, share_name, recreate=False):
         """Create new export, delete old one if exists."""
         raise NotImplementedError()
 
-    def remove_export(self, local_path, share_name):
+    def remove_export(self, server, share_name):
         """Remove export."""
         raise NotImplementedError()
 
-    def allow_access(self, local_path, share_name, access_type, access):
+    def allow_access(self, server, share_name, access_type, access):
         """Allow access to the host."""
         raise NotImplementedError()
 
@@ -507,43 +504,40 @@ class NFSHelper(NASHelperBase):
 
     def __init__(self, execute, config_object):
         super(NFSHelper, self).__init__(execute, config_object)
-#        try:
-#            self._execute('exportfs', check_exit_code=True,
-#                          run_as_root=True)
-#        except exception.ProcessExecutionError:
-#            raise exception.Error('NFS server not found')
 
-    def create_export(self, server_ip, share_name, recreate=False):
+    def create_export(self, server, share_name, recreate=False):
         """Create new export, delete old one if exists."""
-        return ':'.join([server_ip,
+        return ':'.join([_get_server_ip(server),
             os.path.join(self.configuration.share_mount_path, share_name)])
-#
-#    def remove_export(self, local_path, share_name):
-#        """Remove export."""
-#        pass
-#
-#    def allow_access(self, local_path, share_name, access_type, access):
-#        """Allow access to the host"""
-#        if access_type != 'ip':
-#            reason = 'only ip access type allowed'
-#            raise exception.InvalidShareAccess(reason)
-#        #check if presents in export
-#        out, _ = self._execute('exportfs', run_as_root=True)
-#        out = re.search(re.escape(local_path) + '[\s\n]*' + re.escape(access),
-#                        out)
-#        if out is not None:
-#            raise exception.ShareAccessExists(access_type=access_type,
-#                                              access=access)
-#
-#        self._execute('exportfs', '-o', 'rw,no_subtree_check',
-#                      ':'.join([access, local_path]), run_as_root=True,
-#                      check_exit_code=True)
-#
-#    def deny_access(self, local_path, share_name, access_type, access,
-#                    force=False):
-#        """Deny access to the host."""
-#        self._execute('exportfs', '-u', ':'.join([access, local_path]),
-#                      run_as_root=True, check_exit_code=False)
+
+    def remove_export(self, server, share_name):
+        """Remove export."""
+        pass
+
+    def allow_access(self, server, share_name, access_type, access):
+        """Allow access to the host"""
+        local_path = os.path.join(self.configuration.share_mount_path,
+                                  share_name)
+        if access_type != 'ip':
+            reason = 'only ip access type allowed'
+            raise exception.InvalidShareAccess(reason)
+        #check if presents in export
+        out, _ = _ssh_exec(server, ['sudo', 'exportfs'], self._execute)
+        out = re.search(re.escape(local_path) + '[\s\n]*' + re.escape(access),
+                        out)
+        if out is not None:
+            raise exception.ShareAccessExists(access_type=access_type,
+                                              access=access)
+        _ssh_exec(server, ['sudo', 'exportfs', '-o', 'rw,no_subtree_check',
+                  ':'.join([access, local_path])], self._execute)
+
+    def deny_access(self, server, share_name, access_type, access,
+                    force=False):
+        """Deny access to the host."""
+        local_path = os.path.join(self.configuration.share_mount_path,
+                                  share_name)
+        _ssh_exec(server, ['sudo', 'exportfs', '-u',
+                           ':'.join([access, local_path])], self._execute)
 
 
 class CIFSHelper(NASHelperBase):
@@ -673,93 +667,3 @@ class CIFSHelper(NASHelperBase):
 #        #restart daemon if necessary
 #        if restart:
 #            self._execute(*'pkill -HUP smbd'.split(), run_as_root=True)
-
-
-class CIFSNetConfHelper(NASHelperBase):
-    """Manage shares in samba server by net conf tool.
-#
-#    Class provides functionality to operate with CIFS shares. Samba
-#    server should be configured to use registry as configuration
-#    backend to allow dynamically share managements. There are two ways
-#    to done that, one of them is to add specific parameter in the
-#    global configuration section at smb.conf:
-#
-#        [global]
-#            include = registry
-#
-#    For more inforation see smb.conf(5).
-#    """
-#
-#    def create_export(self, local_path, share_name, recreate=False):
-#        """Create share at samba server."""
-#        create_cmd = ('net', 'conf', 'addshare', share_name, local_path,
-#                      'writeable=y', 'guest_ok=y')
-#        try:
-#            self._execute(*create_cmd, run_as_root=True)
-#        except exception.ProcessExecutionError as e:
-#            if 'already exists' in e.stderr:
-#                if recreate:
-#                    self._execute('net', 'conf', 'delshare', share_name,
-#                                  run_as_root=True)
-#                    self._execute(*create_cmd, run_as_root=True)
-#                else:
-#                    msg = _('Share section %r already defined.') % (share_name)
-#                    raise exception.ShareBackendException(msg=msg)
-#            else:
-#                raise
-#
-#        parameters = {
-#            'browseable': 'yes',
-#            'create mask': '0755',
-#            'hosts deny': '0.0.0.0/0',  # deny all
-#            'hosts allow': '127.0.0.1',
-#        }
-#        for name, value in parameters.items():
-#            self._execute('net', 'conf', 'setparm', share_name, name, value,
-#                          run_as_root=True)
-#        return '//%s/%s' % (self.configuration.share_export_ip, share_name)
-#
-#    def remove_export(self, local_path, share_name):
-#        """Remove share definition from samba server."""
-#        try:
-#            self._execute('net', 'conf', 'delshare', share_name,
-#                          run_as_root=True)
-#        except exception.ProcessExecutionError as e:
-#            if 'SBC_ERR_NO_SUCH_SERVICE' not in e.stderr:
-#                raise
-#        self._execute('smbcontrol', 'all', 'close-share', share_name,
-#                      run_as_root=True)
-#
-#    def allow_access(self, local_path, share_name, access_type, access):
-#        """Add to allow hosts additional access rule."""
-#        if access_type != 'ip':
-#            reason = _('only ip access type allowed')
-#            raise exception.InvalidShareAccess(reason=reason)
-#
-#        hosts = self._get_allow_hosts(share_name)
-#        if access in hosts:
-#            raise exception.ShareAccessExists(access_type=access_type,
-#                                              access=access)
-#        hosts.append(access)
-#        self._set_allow_hosts(hosts, share_name)
-#
-#    def deny_access(self, local_path, share_name, access_type, access,
-#                    force=False):
-#        """Remove from allow hosts permit rule."""
-#        try:
-#            hosts = self._get_allow_hosts(share_name)
-#            hosts.remove(access)
-#            self._set_allow_hosts(hosts, share_name)
-#        except exception.ProcessExecutionError as e:
-#            if not ('does not exist' in e.stdout and force):
-#                raise
-#
-#    def _get_allow_hosts(self, share_name):
-#        (out, _) = self._execute('net', 'conf', 'getparm', share_name,
-#                                 'hosts allow', run_as_root=True)
-#        return out.split()
-#
-#    def _set_allow_hosts(self, hosts, share_name):
-#        value = ' '.join(hosts)
-#        self._execute('net', 'conf', 'setparm', share_name, 'hosts allow',
-#                      value, run_as_root=True)
