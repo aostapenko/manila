@@ -42,13 +42,13 @@ from oslo.config import cfg
 LOG = logging.getLogger(__name__)
 
 share_opts = [
-    cfg.StrOpt('smb_config_path',
-               default='$state_path/smb.conf',
-               help="Path to smb config"),
     cfg.StrOpt('service_image_name',
                default='manila-service-image',
                help="Name of image in glance, that will be used to create "
                "service instance"),
+    cfg.StrOpt('smb_template_config_path',
+               default='$state_path/smb.conf',
+               help="Path to smb config"),
     cfg.StrOpt('service_instance_name',
                default='manila_service_instance',
                help="Name of service instance"),
@@ -77,6 +77,9 @@ share_opts = [
                default=100,
                help="ID of flavor, that will be used for service instance "
                "creation"),
+    cfg.StrOpt('smb_config_path',
+               default='$share_mount_path/smb.conf',
+               help="Path to smb config"),
     cfg.ListOpt('share_lvm_helpers',
                 default=[
                     'CIFS=manila.share.drivers.generic.CIFSHelper',
@@ -137,8 +140,6 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self.volume_api = volume.API()
         self.image_api = glance.get_default_image_service()
         self._setup_helpers()
-        for helper in self._helpers.values():
-            helper.init()
 
     def _setup_helpers(self):
         """Initializes protocol-specific NAS drivers."""
@@ -542,74 +543,91 @@ class NFSHelper(NASHelperBase):
 
 class CIFSHelper(NASHelperBase):
     """Class provides functionality to operate with cifs shares"""
-#
-#    def __init__(self, execute, config_object):
-#        """Store executor and configuration path."""
-#        super(CIFSHelper, self).__init__(execute, config_object)
-#        self.config = self.configuration.smb_config_path
-#        self.test_config = "%s_" % (self.config,)
-#
-#    def init(self):
-#        """Initialize environment."""
-#        self._recreate_config()
-#        self._ensure_daemon_started()
-#
-#    def create_export(self, local_path, share_name, recreate=False):
-#        """Create new export, delete old one if exists."""
-#        parser = ConfigParser.ConfigParser()
-#        parser.read(self.config)
-#        #delete old one
-#        if parser.has_section(share_name):
-#            if recreate:
-#                parser.remove_section(share_name)
-#            else:
-#                raise exception.Error('Section exists')
-#        #Create new one
-#        parser.add_section(share_name)
-#        parser.set(share_name, 'path', local_path)
-#        parser.set(share_name, 'browseable', 'yes')
-#        parser.set(share_name, 'guest ok', 'yes')
-#        parser.set(share_name, 'read only', 'no')
-#        parser.set(share_name, 'writable', 'yes')
-#        parser.set(share_name, 'create mask', '0755')
-#        parser.set(share_name, 'hosts deny', '0.0.0.0/0')  # denying all ips
-#        parser.set(share_name, 'hosts allow', '127.0.0.1')
-#        #NOTE(rushiagr): ensure that local_path dir is existing
-#        if not os.path.exists(local_path):
-#            os.makedirs(local_path)
-#        self._execute('chown', 'nobody', '-R', local_path, run_as_root=True)
-#        self._update_config(parser)
-#        return '//%s/%s' % (self.configuration.share_export_ip, share_name)
-#
-#    def remove_export(self, local_path, share_name):
-#        """Remove export."""
-#        parser = ConfigParser.ConfigParser()
-#        parser.read(self.config)
-#        #delete old one
-#        if parser.has_section(share_name):
-#            parser.remove_section(share_name)
-#        self._update_config(parser)
-#        self._execute('smbcontrol', 'all', 'close-share', share_name,
-#                      run_as_root=True)
-#
-#    def allow_access(self, local_path, share_name, access_type, access):
-#        """Allow access to the host."""
-#        if access_type != 'ip':
-#            reason = 'only ip access type allowed'
-#            raise exception.InvalidShareAccess(reason)
-#        parser = ConfigParser.ConfigParser()
-#        parser.read(self.config)
-#
-#        hosts = parser.get(share_name, 'hosts allow')
-#        if access in hosts.split():
-#            raise exception.ShareAccessExists(access_type=access_type,
-#                                              access=access)
-#        hosts += ' %s' % (access,)
-#        parser.set(share_name, 'hosts allow', hosts)
-#        self._update_config(parser)
-#
-#    def deny_access(self, local_path, share_name, access_type, access,
-#                    force=False):
+
+    def __init__(self, execute, config_object):
+        """Store executor and configuration path."""
+        super(CIFSHelper, self).__init__(execute, config_object)
+        self.config_path = self.configuration.smb_config_path
+        self.smb_template_config = self.configuration.smb_template_config_path
+        self.test_config = "%s_" % (self.smb_template_config,)
+
+    def create_export(self, server, share_name, recreate=False):
+        """Create new export, delete old one if exists."""
+        local_path = os.path.join(self.configuration.share_mount_path,
+                                  share_name)
+        config = self._write_local_config(server)
+        parser = ConfigParser.ConfigParser()
+        parser.read(config)
+        #delete old one
+        if parser.has_section(share_name):
+            if recreate:
+                parser.remove_section(share_name)
+            else:
+                raise exception.Error('Section exists')
+        #Create new one
+        parser.add_section(share_name)
+        parser.set(share_name, 'path', local_path)
+        parser.set(share_name, 'browseable', 'yes')
+        parser.set(share_name, 'guest ok', 'yes')
+        parser.set(share_name, 'read only', 'no')
+        parser.set(share_name, 'writable', 'yes')
+        parser.set(share_name, 'create mask', '0755')
+        parser.set(share_name, 'hosts deny', '0.0.0.0/0')  # denying all ips
+        parser.set(share_name, 'hosts allow', '127.0.0.1')
+        self._update_config(parser, config)
+        self._write_remote_config(server, config)
+        self._restart_service(server)
+        return '//%s/%s' % (_get_server_ip(server), share_name)
+
+    def remove_export(self, server, share_name):
+        """Remove export."""
+        config = self._write_local_config(server)
+        parser = ConfigParser.ConfigParser()
+        parser.read(config)
+        #delete old one
+        if parser.has_section(share_name):
+            parser.remove_section(share_name)
+        self._update_config(parser, config)
+        self._write_remote_config(server, config)
+        _ssh_exec(server, ['sudo', 'smbcontrol', 'all', 'close-share',
+                       share_name], self._execute)
+
+    def _write_local_config(self, server):
+        cfg, _ = _ssh_exec(server, ['cat', self.config_path], self._execute)
+        config = os.path.join(os.path.dirname(self.smb_template_config),
+                                              'smb-') + server['id']
+        with open(config, 'w') as f:
+            f.write(cfg)
+        return config
+
+    def _write_remote_config(self, server, config):
+        with open(config, 'r') as f:
+            cfg = "'" + f.read() + "'"
+        _ssh_exec(server, ['echo %s > %s' % (cfg, self.config_path)],
+                  self._execute)
+
+    def allow_access(self, server, share_name, access_type, access):
+        """Allow access to the host."""
+        if access_type != 'ip':
+            reason = 'only ip access type allowed'
+            raise exception.InvalidShareAccess(reason)
+        config = self._write_local_config(server)
+        parser = ConfigParser.ConfigParser()
+        parser.read(config)
+
+        hosts = parser.get(share_name, 'hosts allow')
+        if access in hosts.split():
+            raise exception.ShareAccessExists(access_type=access_type,
+                                              access=access)
+        hosts += ' %s' % (access,)
+        parser.set(share_name, 'hosts allow', hosts)
+        self._update_config(parser, config)
+        self._write_remote_config(server, config)
+        self._restart_service(server)
+
+    def deny_access(self, local_path, share_name, access_type, access,
+                    force=False):
+        pass
 #        """Deny access to the host."""
 #        parser = ConfigParser.ConfigParser()
 #        try:
@@ -621,28 +639,7 @@ class CIFSHelper(NASHelperBase):
 #        except ConfigParser.NoSectionError:
 #            if not force:
 #                raise
-#
-#    def _ensure_daemon_started(self):
-#        """
-#        FYI: smbd starts at least two processes.
-#        """
-#        out, _ = self._execute(*'ps -C smbd -o args='.split(),
-#                               check_exit_code=False)
-#        processes = [process.strip() for process in out.split('\n')
-#                     if process.strip()]
-#
-#        cmd = 'smbd -s %s -D' % (self.config,)
-#
-#        running = False
-#        for process in processes:
-#            if not process.endswith(cmd):
-#                #alternatively exit
-#                raise exception.Error('smbd already started with wrong config')
-#            running = True
-#
-#        if not running:
-#            self._execute(*cmd.split(), run_as_root=True)
-#
+
 #    def _recreate_config(self):
 #        """create new SAMBA configuration file."""
 #        if os.path.exists(self.config):
@@ -653,17 +650,18 @@ class CIFSHelper(NASHelperBase):
 #        parser.set('global', 'server string', '%h server (Samba, Openstack)')
 #
 #        self._update_config(parser, restart=False)
-#
-#    def _update_config(self, parser, restart=True):
-#        """Check if new configuration is correct and save it."""
-#        #Check that configuration is correct
-#        with open(self.test_config, 'w') as fp:
-#            parser.write(fp)
-#        self._execute('testparm', '-s', self.test_config,
-#                      check_exit_code=True)
-#        #save it
-#        with open(self.config, 'w') as fp:
-#            parser.write(fp)
-#        #restart daemon if necessary
-#        if restart:
-#            self._execute(*'pkill -HUP smbd'.split(), run_as_root=True)
+
+    def _restart_service(self, server):
+        _ssh_exec(server, 'sudo pkill -HUP smbd'.split(), self._execute)
+
+
+    def _update_config(self, parser, config):
+        """Check if new configuration is correct and save it."""
+        #Check that configuration is correct
+        with open(self.test_config, 'w') as fp:
+            parser.write(fp)
+        self._execute('testparm', '-s', self.test_config,
+                      check_exit_code=True)
+        #save it
+        with open(config, 'w') as fp:
+            parser.write(fp)
