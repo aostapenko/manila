@@ -575,9 +575,6 @@ class CIFSHelper(NASHelperBase):
     def init_helper(self, server):
         self._recreate_template_config()
         local_config = self._create_local_config(server['tenant_id']) 
-        _ssh_exec(server, ['sudo', 'stop', 'smbd'], self._execute)
-        _ssh_exec(server, ['sudo', 'smbd', '-s', self.config_path],
-                  self._execute)
         try:
             _ssh_exec(server, ['sudo', 'mkdir',
                                os.path.dirname(self.config_path)],
@@ -593,6 +590,9 @@ class CIFSHelper(NASHelperBase):
         except Exception as e:
             LOG.debug(e.message)
             raise
+        _ssh_exec(server, ['sudo', 'stop', 'smbd'], self._execute)
+        _ssh_exec(server, ['sudo', 'smbd', '-s', self.config_path],
+                  self._execute)
         self._write_remote_config(local_config, server)
 
     def create_export(self, server, share_name, recreate=False):
