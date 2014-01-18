@@ -23,6 +23,7 @@ import ConfigParser
 import math
 import os
 import re
+import shutil
 import time
 import threading
 
@@ -95,10 +96,12 @@ network_api = network.API()
 def synchronized(f):
     """Decorates function with unique locks for each tenant
     """
-    def wrapped_func(self, context, share, *args, **kwargs):
-        tenant_id = share['project_id']
+    def wrapped_func(self, arg, instance, *args, **kwargs):
+        tenant_id = instance.get('project_id', None)
+        if tenant_id is None:
+            tenant_id = instance['tenant_id']
         with self.tenants_locks.setdefault(tenant_id, threading.RLock()):
-            return f(self, context, share, *args, **kwargs)
+            return f(self, arg, instance, *args, **kwargs)
     return wrapped_func
 
 
@@ -148,7 +151,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             share_proto, _, import_str = helper_str.partition('=')
             helper = importutils.import_class(import_str)
             self._helpers[share_proto.upper()] = helper(self._execute,
-                                                        self.configuration)
+                                                        self.configuration,
+                                                        self.tenants_locks)
 
     def create_share(self, context, share):
         server = self._get_service_instance(context, share)
@@ -258,7 +262,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                     {'name': self.configuration.service_instance_name})
         if not servers:
             if create:
-                return self._create_service_instance(context)
+                server = self._create_service_instance(context)
+                self._get_helper(share).init_helper(server)
+                return server
             else:
                 return None
         elif len(servers) > 1:
@@ -475,9 +481,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 class NASHelperBase(object):
     """Interface to work with share."""
 
-    def __init__(self, execute, config_object):
+    def __init__(self, execute, config_object, locks):
         self.configuration = config_object
         self._execute = execute
+        self.tenants_locks = locks
 
     def init(self):
         pass
@@ -503,8 +510,8 @@ class NASHelperBase(object):
 class NFSHelper(NASHelperBase):
     """Interface to work with share."""
 
-    def __init__(self, execute, config_object):
-        super(NFSHelper, self).__init__(execute, config_object)
+    def __init__(self, *args):
+        super(NFSHelper, self).__init__(*args)
 
     def create_export(self, server, share_name, recreate=False):
         """Create new export, delete old one if exists."""
@@ -544,18 +551,53 @@ class NFSHelper(NASHelperBase):
 class CIFSHelper(NASHelperBase):
     """Class provides functionality to operate with cifs shares"""
 
-    def __init__(self, execute, config_object):
+    def __init__(self, *args):
         """Store executor and configuration path."""
-        super(CIFSHelper, self).__init__(execute, config_object)
+        super(CIFSHelper, self).__init__(*args)
         self.config_path = self.configuration.smb_config_path
         self.smb_template_config = self.configuration.smb_template_config_path
         self.test_config = "%s_" % (self.smb_template_config,)
+        self.local_configs = {}
+
+    def _create_local_config(self, tenant_id):
+        path, ext = os.path.splitext(self.smb_template_config) 
+        local_config = '%s-%s%s' % (path, tenant_id, ext)
+        self.local_configs[tenant_id] = local_config
+        if not os.path.isfile(local_config):
+            shutil.copy(self.smb_template_config, local_config)
+        return local_config
+
+    def _get_local_config(self, tenant_id):
+        local_config = self.local_configs.get(tenant_id, None)
+        if local_config is None:
+            local_config = self._create_local_config(tenant_id)
+        return local_config
+
+    def init_helper(self, server):
+        self._recreate_template_config()
+        local_config = self._create_local_config(server['tenant_id']) 
+        _ssh_exec(server, ['sudo', 'stop', 'smbd', self._execute])
+        try:
+            _ssh_exec(server, ['sudo', 'mkdir',
+                               os.path.dirname(self.config_path)],
+                           self._execute)
+            _ssh_exec(server, ['sudo', 'chown',
+                               self.configuration.service_instance_user,
+                               os.path.dirname(self.config_path)],
+                      self._execute)
+        except Exception as e:
+            LOG.debug(e.message)
+        try:
+            _ssh_exec(server, ['touch', self.config_path], self._execute)
+            self._write_remote_config(local_config, server)
+        except Exception as e:
+            LOG.debug(e.message)
 
     def create_export(self, server, share_name, recreate=False):
         """Create new export, delete old one if exists."""
         local_path = os.path.join(self.configuration.share_mount_path,
                                   share_name)
-        config = self._write_local_config(server)
+        config = self._get_local_config(server['tenant_id'])
         parser = ConfigParser.ConfigParser()
         parser.read(config)
         #delete old one
@@ -575,32 +617,28 @@ class CIFSHelper(NASHelperBase):
         parser.set(share_name, 'hosts deny', '0.0.0.0/0')  # denying all ips
         parser.set(share_name, 'hosts allow', '127.0.0.1')
         self._update_config(parser, config)
-        self._write_remote_config(server, config)
+        self._write_remote_config(config, server)
         self._restart_service(server)
         return '//%s/%s' % (_get_server_ip(server), share_name)
 
     def remove_export(self, server, share_name):
         """Remove export."""
-        config = self._write_local_config(server)
-        parser = ConfigParser.ConfigParser()
-        parser.read(config)
-        #delete old one
-        if parser.has_section(share_name):
-            parser.remove_section(share_name)
-        self._update_config(parser, config)
-        self._write_remote_config(server, config)
+        try:
+            config = self._get_local_config(server['tenant_id'])
+        except Exception as e:
+            LOG.debug(e.message)
+        else:
+            parser = ConfigParser.ConfigParser()
+            parser.read(config)
+            #delete old one
+            if parser.has_section(share_name):
+                parser.remove_section(share_name)
+            self._update_config(parser, config)
+            self._write_remote_config(config, server)
         _ssh_exec(server, ['sudo', 'smbcontrol', 'all', 'close-share',
                        share_name], self._execute)
 
-    def _write_local_config(self, server):
-        cfg, _ = _ssh_exec(server, ['cat', self.config_path], self._execute)
-        config = os.path.join(os.path.dirname(self.smb_template_config),
-                                              'smb-') + server['id']
-        with open(config, 'w') as f:
-            f.write(cfg)
-        return config
-
-    def _write_remote_config(self, server, config):
+    def _write_remote_config(self, config, server):
         with open(config, 'r') as f:
             cfg = "'" + f.read() + "'"
         _ssh_exec(server, ['echo %s > %s' % (cfg, self.config_path)],
@@ -611,7 +649,7 @@ class CIFSHelper(NASHelperBase):
         if access_type != 'ip':
             reason = 'only ip access type allowed'
             raise exception.InvalidShareAccess(reason)
-        config = self._write_local_config(server)
+        config = self._get_local_config(server['tenant_id'])
         parser = ConfigParser.ConfigParser()
         parser.read(config)
 
@@ -622,38 +660,38 @@ class CIFSHelper(NASHelperBase):
         hosts += ' %s' % (access,)
         parser.set(share_name, 'hosts allow', hosts)
         self._update_config(parser, config)
-        self._write_remote_config(server, config)
+        self._write_remote_config(config, server)
         self._restart_service(server)
 
-    def deny_access(self, local_path, share_name, access_type, access,
+    def deny_access(self, server, share_name, access_type, access,
                     force=False):
-        pass
-#        """Deny access to the host."""
-#        parser = ConfigParser.ConfigParser()
-#        try:
-#            parser.read(self.config)
-#            hosts = parser.get(share_name, 'hosts allow')
-#            hosts = hosts.replace(' %s' % (access,), '', 1)
-#            parser.set(share_name, 'hosts allow', hosts)
-#            self._update_config(parser)
-#        except ConfigParser.NoSectionError:
-#            if not force:
-#                raise
+        """Deny access to the host."""
+        config = self._get_local_config(server['tenant_id'])
+        parser = ConfigParser.ConfigParser()
+        try:
+            parser.read(config)
+            hosts = parser.get(share_name, 'hosts allow')
+            hosts = hosts.replace(' %s' % (access,), '', 1)
+            parser.set(share_name, 'hosts allow', hosts)
+            self._update_config(parser, config)
+        except ConfigParser.NoSectionError:
+            if not force:
+                raise
+        self._write_remote_config(config, server)
+        self._restart_service(server)
 
-#    def _recreate_config(self):
-#        """create new SAMBA configuration file."""
-#        if os.path.exists(self.config):
-#            os.unlink(self.config)
-#        parser = ConfigParser.ConfigParser()
-#        parser.add_section('global')
-#        parser.set('global', 'security', 'user')
-#        parser.set('global', 'server string', '%h server (Samba, Openstack)')
-#
-#        self._update_config(parser, restart=False)
+    def _recreate_config(self):
+        """create new SAMBA configuration file."""
+        if os.path.exists(self.smb_template_config):
+            os.unlink(self.smb_template_config)
+        parser = ConfigParser.ConfigParser()
+        parser.add_section('global')
+        parser.set('global', 'security', 'user')
+        parser.set('global', 'server string', '%h server (Samba, Openstack)')
+        self._update_config(parser, self.smb_template_config, restart=False)
 
     def _restart_service(self, server):
         _ssh_exec(server, 'sudo pkill -HUP smbd'.split(), self._execute)
-
 
     def _update_config(self, parser, config):
         """Check if new configuration is correct and save it."""
