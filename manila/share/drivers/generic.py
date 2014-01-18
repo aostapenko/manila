@@ -563,8 +563,7 @@ class CIFSHelper(NASHelperBase):
         path, ext = os.path.splitext(self.smb_template_config) 
         local_config = '%s-%s%s' % (path, tenant_id, ext)
         self.local_configs[tenant_id] = local_config
-        if not os.path.isfile(local_config):
-            shutil.copy(self.smb_template_config, local_config)
+        shutil.copy(self.smb_template_config, local_config)
         return local_config
 
     def _get_local_config(self, tenant_id):
@@ -576,7 +575,9 @@ class CIFSHelper(NASHelperBase):
     def init_helper(self, server):
         self._recreate_template_config()
         local_config = self._create_local_config(server['tenant_id']) 
-        _ssh_exec(server, ['sudo', 'stop', 'smbd', self._execute])
+        _ssh_exec(server, ['sudo', 'stop', 'smbd'], self._execute)
+        _ssh_exec(server, ['sudo', 'smbd', '-s', self.config_path],
+                  self._execute)
         try:
             _ssh_exec(server, ['sudo', 'mkdir',
                                os.path.dirname(self.config_path)],
@@ -589,9 +590,10 @@ class CIFSHelper(NASHelperBase):
             LOG.debug(e.message)
         try:
             _ssh_exec(server, ['touch', self.config_path], self._execute)
-            self._write_remote_config(local_config, server)
         except Exception as e:
             LOG.debug(e.message)
+            raise
+        self._write_remote_config(local_config, server)
 
     def create_export(self, server, share_name, recreate=False):
         """Create new export, delete old one if exists."""
@@ -680,7 +682,7 @@ class CIFSHelper(NASHelperBase):
         self._write_remote_config(config, server)
         self._restart_service(server)
 
-    def _recreate_config(self):
+    def _recreate_template_config(self):
         """create new SAMBA configuration file."""
         if os.path.exists(self.smb_template_config):
             os.unlink(self.smb_template_config)
@@ -688,7 +690,7 @@ class CIFSHelper(NASHelperBase):
         parser.add_section('global')
         parser.set('global', 'security', 'user')
         parser.set('global', 'server string', '%h server (Samba, Openstack)')
-        self._update_config(parser, self.smb_template_config, restart=False)
+        self._update_config(parser, self.smb_template_config)
 
     def _restart_service(self, server):
         _ssh_exec(server, 'sudo pkill -HUP smbd'.split(), self._execute)
