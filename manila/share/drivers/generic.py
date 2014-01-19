@@ -114,7 +114,7 @@ def synchronized(f):
     return wrapped_func
 
 
-def _ssh_exec(server, command, execute):
+def _ssh_exec(server, command):
     ip = _get_server_ip(server)
     net_id = [port['network_id'] for port in
               network_api.list_ports(device_id=server['id'])][0]
@@ -123,7 +123,7 @@ def _ssh_exec(server, command, execute):
     cmd = ['ip', 'netns', 'exec', netns, 'ssh', user + '@' + ip,
            '-o StrictHostKeyChecking=no', '-i', CONF.path_to_private_key]
     cmd.extend(command)
-    return execute(*cmd, run_as_root=True)
+    return utils.execute(*cmd, run_as_root=True)
 
 
 def _get_server_ip(server):
@@ -176,20 +176,20 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _format_device(self, server, volume):
         command = ['sudo', 'mkfs.ext4', volume['mountpoint']]
-        _ssh_exec(server, command, self._execute)
+        _ssh_exec(server, command)
 
     def _mount_device(self, context, share, server, volume):
         mount_path = self._get_mount_path(share)
         command = ['sudo', 'mkdir', '-p', mount_path, ';']
         command.extend(['sudo', 'mount', volume['mountpoint'], mount_path])
-        _ssh_exec(server, command, self._execute)
+        _ssh_exec(server, command)
 
     def _unmount_device(self, context, share, server):
         mount_path = self._get_mount_path(share)
         command = ['sudo', 'umount', mount_path, ';']
         command.extend(['sudo', 'rmdir', mount_path])
         try:
-            _ssh_exec(server, command, self._execute)
+            _ssh_exec(server, command)
         except Exception as e:
             LOG.debug(e)
 
@@ -345,7 +345,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         while time.time() - t < self.configuration.max_time_to_build_instance:
             LOG.debug('Checking server availability')
             try:
-                _ssh_exec(service_instance, ['echo', 'Hello'], self._execute)
+                _ssh_exec(service_instance, ['echo', 'Hello'])
                 return service_instance
             except Exception as e:
                 LOG.debug(e)
@@ -569,14 +569,14 @@ class NFSHelper(NASHelperBase):
             reason = 'only ip access type allowed'
             raise exception.InvalidShareAccess(reason)
         #check if presents in export
-        out, _ = _ssh_exec(server, ['sudo', 'exportfs'], self._execute)
+        out, _ = _ssh_exec(server, ['sudo', 'exportfs'])
         out = re.search(re.escape(local_path) + '[\s\n]*' + re.escape(access),
                         out)
         if out is not None:
             raise exception.ShareAccessExists(access_type=access_type,
                                               access=access)
         _ssh_exec(server, ['sudo', 'exportfs', '-o', 'rw,no_subtree_check',
-                  ':'.join([access, local_path])], self._execute)
+                  ':'.join([access, local_path])])
 
     def deny_access(self, server, share_name, access_type, access,
                     force=False):
@@ -584,7 +584,7 @@ class NFSHelper(NASHelperBase):
         local_path = os.path.join(self.configuration.share_mount_path,
                                   share_name)
         _ssh_exec(server, ['sudo', 'exportfs', '-u',
-                           ':'.join([access, local_path])], self._execute)
+                           ':'.join([access, local_path])])
 
 
 class CIFSHelper(NASHelperBase):
@@ -616,25 +616,22 @@ class CIFSHelper(NASHelperBase):
         local_config = self._create_local_config(server['tenant_id']) 
         try:
             _ssh_exec(server, ['sudo', 'mkdir',
-                               os.path.dirname(self.config_path)],
-                           self._execute)
+                               os.path.dirname(self.config_path)])
             _ssh_exec(server, ['sudo', 'chown',
                                self.configuration.service_instance_user,
-                               os.path.dirname(self.config_path)],
-                      self._execute)
+                               os.path.dirname(self.config_path)])
         except Exception as e:
             LOG.debug(e.message)
         try:
-            _ssh_exec(server, ['touch', self.config_path], self._execute)
+            _ssh_exec(server, ['touch', self.config_path])
         except Exception as e:
             LOG.debug(e.message)
             raise
         try:
-            _ssh_exec(server, ['sudo', 'stop', 'smbd'], self._execute)
+            _ssh_exec(server, ['sudo', 'stop', 'smbd'])
         except Exception as e:
             LOG.debug(e.message)
-        _ssh_exec(server, ['sudo', 'smbd', '-s', self.config_path],
-                  self._execute)
+        _ssh_exec(server, ['sudo', 'smbd', '-s', self.config_path])
         self._write_remote_config(local_config, server)
 
     def create_export(self, server, share_name, recreate=False):
@@ -680,13 +677,12 @@ class CIFSHelper(NASHelperBase):
             self._update_config(parser, config)
             self._write_remote_config(config, server)
         _ssh_exec(server, ['sudo', 'smbcontrol', 'all', 'close-share',
-                       share_name], self._execute)
+                       share_name])
 
     def _write_remote_config(self, config, server):
         with open(config, 'r') as f:
             cfg = "'" + f.read() + "'"
-        _ssh_exec(server, ['echo %s > %s' % (cfg, self.config_path)],
-                  self._execute)
+        _ssh_exec(server, ['echo %s > %s' % (cfg, self.config_path)])
 
     def allow_access(self, server, share_name, access_type, access):
         """Allow access to the host."""
@@ -735,7 +731,7 @@ class CIFSHelper(NASHelperBase):
         self._update_config(parser, self.smb_template_config)
 
     def _restart_service(self, server):
-        _ssh_exec(server, 'sudo pkill -HUP smbd'.split(), self._execute)
+        _ssh_exec(server, 'sudo pkill -HUP smbd'.split())
 
     def _update_config(self, parser, config):
         """Check if new configuration is correct and save it."""
