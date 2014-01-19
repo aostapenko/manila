@@ -117,9 +117,9 @@ def _ssh_exec(server, command, execute):
               network_api.list_ports(device_id=server['id'])][0]
     netns = 'qdhcp-' + net_id
     user = CONF.service_instance_user
+    private_key = os.path.splitext(CONF.path_to_key)[0]
     cmd = ['ip', 'netns', 'exec', netns, 'ssh', user + '@' + ip,
-           '-o StrictHostKeyChecking=no', '-i',
-           CONF.path_to_key]
+           '-o StrictHostKeyChecking=no', '-i', private_key]
     cmd.extend(command)
     return execute(*cmd, run_as_root=True)
 
