@@ -62,8 +62,11 @@ share_opts = [
     cfg.StrOpt('manila_service_keypair_name',
                default='manila-service',
                help="Volume name template"),
-    cfg.StrOpt('path_to_key',
+    cfg.StrOpt('path_to_public_key',
                default='/root/.ssh/id_rsa.pub',
+               help="Volume name template"),
+    cfg.StrOpt('path_to_private_key',
+               default='/root/.ssh/id_rsa',
                help="Volume name template"),
     cfg.StrOpt('volume_snapshot_name_template',
                default='manila-snapshot-',
@@ -117,9 +120,8 @@ def _ssh_exec(server, command, execute):
               network_api.list_ports(device_id=server['id'])][0]
     netns = 'qdhcp-' + net_id
     user = CONF.service_instance_user
-    private_key = os.path.splitext(CONF.path_to_key)[0]
     cmd = ['ip', 'netns', 'exec', netns, 'ssh', user + '@' + ip,
-           '-o StrictHostKeyChecking=no', '-i', private_key]
+           '-o StrictHostKeyChecking=no', '-i', CONF.path_to_private_key]
     cmd.extend(command)
     return execute(*cmd, run_as_root=True)
 
@@ -136,6 +138,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         super(GenericShareDriver, self).__init__(*args, **kwargs)
         self.db = db
         self.tenants_locks = {}
+        self.tenants_servers = {}
         self.configuration.append_config_values(share_opts)
         self._helpers = None
 
@@ -265,19 +268,23 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     @synchronized
     def _get_service_instance(self, context, share, create=True):
+        server = self.tenants_servers.get(share['project_id'], None)
         servers = self.compute_api.server_list(context,
                     {'name': self.configuration.service_instance_name})
+        new_server = None
         if not servers:
             if create:
-                server = self._create_service_instance(context)
-                self._get_helper(share).init_helper(server)
-                return server
-            else:
-                return None
+                new_server = self._create_service_instance(context)
         elif len(servers) > 1:
             raise exception.ManilaException('Ambigious service instances')
         else:
-            return servers[0]
+            new_server = servers[0]
+
+        if server is None and new_server is not None:
+             for helper in self._helpers.values():
+                helper.init_helper(new_server)
+        self.tenants_servers[share['project_id']] = new_server
+        return new_server
 
     def _get_key(self, context):
         keypair_name = self.configuration.manila_service_keypair_name
@@ -287,7 +294,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.ManilaException('Ambigious keypairs')
 
         public_key, _ = self._execute('cat',
-                                      self.configuration.path_to_key,
+                                      self.configuration.path_to_public_key,
                                       run_as_root=True)
         if not keypairs:
             keypair = self.compute_api.keypair_import(context, keypair_name,
@@ -518,7 +525,7 @@ class NASHelperBase(object):
         self._execute = execute
         self.tenants_locks = locks
 
-    def init(self):
+    def init_helper(self, server):
         pass
 
     def create_export(self, server, share_name, recreate=False):
@@ -622,7 +629,10 @@ class CIFSHelper(NASHelperBase):
         except Exception as e:
             LOG.debug(e.message)
             raise
-        _ssh_exec(server, ['sudo', 'stop', 'smbd'], self._execute)
+        try:
+            _ssh_exec(server, ['sudo', 'stop', 'smbd'], self._execute)
+        except Exception as e:
+            LOG.debug(e.message)
         _ssh_exec(server, ['sudo', 'smbd', '-s', self.config_path],
                   self._execute)
         self._write_remote_config(local_config, server)
