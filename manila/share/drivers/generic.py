@@ -59,6 +59,12 @@ share_opts = [
     cfg.StrOpt('volume_name_template',
                default='manila-share-',
                help="Volume name template"),
+    cfg.StrOpt('manila_service_keypair_name',
+               default='manila-service',
+               help="Volume name template"),
+    cfg.StrOpt('path_to_key',
+               default='/root/.ssh/id_rsa.pub',
+               help="Volume name template"),
     cfg.StrOpt('volume_snapshot_name_template',
                default='manila-snapshot-',
                help="Volume name template"),
@@ -112,7 +118,8 @@ def _ssh_exec(server, command, execute):
     netns = 'qdhcp-' + net_id
     user = CONF.service_instance_user
     cmd = ['ip', 'netns', 'exec', netns, 'ssh', user + '@' + ip,
-           '-o StrictHostKeyChecking=no']
+           '-o StrictHostKeyChecking=no', '-i',
+           CONF.path_to_key]
     cmd.extend(command)
     return execute(*cmd, run_as_root=True)
 
@@ -272,6 +279,30 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             return servers[0]
 
+    def _get_key(self, context):
+        keypair_name = self.configuration.manila_service_keypair_name
+        keypairs = [k for k in self.compute_api.keypair_list(context) 
+                    if k.name == keypair_name]
+        if len(keypairs) > 1:
+            raise exception.ManilaException('Ambigious keypairs')
+
+        public_key, _ = self._execute('cat',
+                                      self.configuration.path_to_key,
+                                      run_as_root=True)
+        if not keypairs:
+            keypair = self.compute_api.keypair_import(context, keypair_name,
+                                                      public_key)
+        else:
+            keypair = keypairs[0]
+            if keypair.public_key != public_key:
+                LOG.debug('Root public key differs from existing keypair. '
+                          'Creating new keypair')
+                self.compute_api.keypair_delete(context, keypair.id)
+                keypair = self.compute_api.keypair_import(context,
+                                                          keypair_name,
+                                                          public_key)
+        return keypair.name
+
     def _create_service_instance(self, context):
         images = [image['id'] for image in self.image_api.detail(context)
                 if image['name'] == self.configuration.service_image_name]
@@ -280,11 +311,12 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         elif len(images) > 1:
             raise exception.ManilaException('Ambigious image name')
 
+        key_name = self._get_key(context)
         service_instance = self.compute_api.server_create(context,
                                 self.configuration.service_instance_name,
                                 images[0],
                                 self.configuration.service_instance_flavor_id,
-                                None, None, None)
+                                key_name, None, None)
 
         t = time.time()
         while time.time() - t < self.configuration.max_time_to_build_instance:
