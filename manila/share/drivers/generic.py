@@ -63,10 +63,10 @@ share_opts = [
                default='manila-service',
                help="Volume name template"),
     cfg.StrOpt('path_to_public_key',
-               default='/root/.ssh/id_rsa.pub',
+               default='/home/andrei/.ssh/id_rsa.pub',
                help="Volume name template"),
     cfg.StrOpt('path_to_private_key',
-               default='/root/.ssh/id_rsa',
+               default='/home/andrei/.ssh/id_rsa',
                help="Volume name template"),
     cfg.StrOpt('volume_snapshot_name_template',
                default='manila-snapshot-',
@@ -101,6 +101,7 @@ share_opts = [
 CONF = cfg.CONF
 CONF.register_opts(share_opts)
 network_api = network.API()
+
 
 def synchronized(f):
     """Decorates function with unique locks for each tenant
@@ -489,7 +490,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def ensure_share(self, context, share):
         """Ensure that storage are mounted and exported."""
-#        server = self._get_service_instance(context, share['project_id'])
+#        server = self._get_service_instance(context, share)
 #        volume = self._allocate_container(context, share)
 #        self._mount_volume(context, share['project_id'], server, volume)
 
@@ -631,8 +632,8 @@ class CIFSHelper(NASHelperBase):
             _ssh_exec(server, ['sudo', 'stop', 'smbd'])
         except Exception as e:
             LOG.debug(e.message)
-        _ssh_exec(server, ['sudo', 'smbd', '-s', self.config_path])
         self._write_remote_config(local_config, server)
+        _ssh_exec(server, ['sudo', 'smbd', '-s', self.config_path])
 
     def create_export(self, server, share_name, recreate=False):
         """Create new export, delete old one if exists."""
@@ -679,6 +680,7 @@ class CIFSHelper(NASHelperBase):
         _ssh_exec(server, ['sudo', 'smbcontrol', 'all', 'close-share',
                        share_name])
 
+    @synchronized
     def _write_remote_config(self, config, server):
         with open(config, 'r') as f:
             cfg = "'" + f.read() + "'"
