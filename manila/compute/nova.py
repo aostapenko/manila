@@ -39,13 +39,6 @@ nova_opts = [
     cfg.StrOpt('nova_catalog_admin_info',
                default='compute:nova:adminURL',
                help='Same as nova_catalog_info, but for admin endpoint.'),
-    cfg.StrOpt('nova_endpoint_template',
-               default=None,
-               help='Override service catalog lookup with template for nova '
-                    'endpoint e.g. http://localhost:8774/v2/%(tenant_id)s'),
-    cfg.StrOpt('nova_endpoint_admin_template',
-               default=None,
-               help='Same as nova_endpoint_template, but for admin endpoint.'),
     cfg.StrOpt('os_region_name',
                default=None,
                help='region name of this node'),
@@ -56,6 +49,18 @@ nova_opts = [
     cfg.BoolOpt('nova_api_insecure',
                 default=False,
                 help='Allow to perform insecure SSL requests to nova'),
+    cfg.StrOpt('nova_admin_username',
+                default='nova',
+                help='Nova admin username'),
+    cfg.StrOpt('nova_admin_password',
+               default='rengen',
+               help=''),
+    cfg.StrOpt('nova_admin_tenant_name',
+                default='service',
+                help=''),
+    cfg.StrOpt('nova_admin_auth_url',
+                default='http://localhost:5000/v2.0',
+                help='')
 ]
 
 CONF = cfg.CONF
@@ -65,35 +70,34 @@ LOG = logging.getLogger(__name__)
 
 
 def novaclient(context, admin=False):
+    if context.is_admin or admin:
+        c = nova_client.Client(CONF.nova_admin_username,
+                               CONF.nova_admin_password,
+                               CONF.nova_admin_tenant_name,
+                               CONF.nova_admin_auth_url)
+        c.authenticate()
+        return c
     compat_catalog = {
         'access': {'serviceCatalog': context.service_catalog or []}
     }
     sc = service_catalog.ServiceCatalog(compat_catalog)
 
-    nova_endpoint_template = CONF.nova_endpoint_template
     nova_catalog_info = CONF.nova_catalog_info
 
-    if admin:
-        nova_endpoint_template = CONF.nova_endpoint_admin_template
-        nova_catalog_info = CONF.nova_catalog_admin_info
-
-    if nova_endpoint_template:
-        url = nova_endpoint_template % context.to_dict()
+    info = nova_catalog_info
+    service_type, service_name, endpoint_type = info.split(':')
+    # extract the region if set in configuration
+    if CONF.os_region_name:
+        attr = 'region'
+        filter_value = CONF.os_region_name
     else:
-        info = nova_catalog_info
-        service_type, service_name, endpoint_type = info.split(':')
-        # extract the region if set in configuration
-        if CONF.os_region_name:
-            attr = 'region'
-            filter_value = CONF.os_region_name
-        else:
-            attr = None
-            filter_value = None
-        url = sc.url_for(attr=attr,
-                         filter_value=filter_value,
-                         service_type=service_type,
-                         service_name=service_name,
-                         endpoint_type=endpoint_type)
+        attr = None
+        filter_value = None
+    url = sc.url_for(attr=attr,
+                     filter_value=filter_value,
+                     service_type=service_type,
+                     service_name=service_name,
+                     endpoint_type=endpoint_type)
 
     LOG.debug(_('Novaclient connection created using URL: %s') % url)
 
@@ -178,7 +182,7 @@ class API(base.Base):
     def server_list(self, context, search_opts=None, all_tenants=False):
         if search_opts is None:
             search_opts = {}
-        if all_tenants:
+        if all_tenants or context.is_admin:
             search_opts['all_tenants'] = True
         else:
             search_opts['project_id'] = context.project_id

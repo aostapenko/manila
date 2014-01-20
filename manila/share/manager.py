@@ -80,13 +80,13 @@ class ShareManager(manager.SchedulerDependentManager):
                 self.driver.ensure_share(ctxt, share)
                 rules = self.db.share_access_get_all_for_share(ctxt,
                                                                share['id'])
-                for access_ref in rules:
-                    if access_ref['state'] == access_ref.STATE_ACTIVE:
-                        try:
-                            self.driver.allow_access(ctxt, share,
-                                                     access_ref)
-                        except exception.ShareAccessExists:
-                            pass
+#                for access_ref in rules:
+#                    if access_ref['state'] == access_ref.STATE_ACTIVE:
+#                        try:
+#                            self.driver.allow_access(ctxt, share,
+#                                                     access_ref)
+#                        except exception.ShareAccessExists:
+#                            pass
             else:
                 LOG.info(_("share %s: skipping export"), share['name'])
 

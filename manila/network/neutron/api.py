@@ -40,6 +40,7 @@ neutron_opts = [
                help='username for connecting to neutron in admin context'),
     cfg.StrOpt('neutron_admin_password',
                deprecated_name='quantum_admin_password',
+               default='rengen',
                help='password for connecting to neutron in admin context',
                secret=True),
     cfg.StrOpt('neutron_admin_tenant_name',

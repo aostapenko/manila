@@ -39,9 +39,6 @@ cinder_opts = [
             help='Info to match when looking for cinder in the service '
                  'catalog. Format is : separated values of the form: '
                  '<service_type>:<service_name>:<endpoint_type>'),
-    cfg.StrOpt('cinder_endpoint_template',
-               help='Override service catalog lookup with template for cinder '
-                    'endpoint e.g. http://localhost:8776/v1/%(project_id)s'),
     cfg.StrOpt('os_region_name',
                 help='region name of this node'),
     cfg.StrOpt('cinder_ca_certificates_file',
@@ -57,6 +54,19 @@ cinder_opts = [
                 default=True,
                 help='Allow attach between instance and volume in different '
                      'availability zones.'),
+    cfg.StrOpt('cinder_admin_username',
+                default='cinder',
+                help='Cinder admin username'),
+    cfg.StrOpt('cinder_admin_password',
+               default='rengen',
+               help=''),
+    cfg.StrOpt('cinder_admin_tenant_name',
+                default='service',
+                help=''),
+    cfg.StrOpt('cinder_admin_auth_url',
+                default='http://localhost:5000/v2.0',
+                help='')
+
 ]
 
 CONF = cfg.CONF
@@ -66,27 +76,32 @@ LOG = logging.getLogger(__name__)
 
 
 def cinderclient(context):
+    if context.is_admin or True:
+        c = cinder_client.Client(CONF.cinder_admin_username,
+                                 CONF.cinder_admin_password,
+                                 CONF.cinder_admin_tenant_name,
+                                 CONF.cinder_admin_auth_url)
+        c.authenticate()
+        return c
+
     compat_catalog = {
         'access': {'serviceCatalog': context.service_catalog or []}
     }
     sc = service_catalog.ServiceCatalog(compat_catalog)
-    if CONF.cinder_endpoint_template:
-        url = CONF.cinder_endpoint_template % context.to_dict()
+    info = CONF.cinder_catalog_info
+    service_type, service_name, endpoint_type = info.split(':')
+    # extract the region if set in configuration
+    if CONF.os_region_name:
+        attr = 'region'
+        filter_value = CONF.os_region_name
     else:
-        info = CONF.cinder_catalog_info
-        service_type, service_name, endpoint_type = info.split(':')
-        # extract the region if set in configuration
-        if CONF.os_region_name:
-            attr = 'region'
-            filter_value = CONF.os_region_name
-        else:
-            attr = None
-            filter_value = None
-        url = sc.url_for(attr=attr,
-                         filter_value=filter_value,
-                         service_type=service_type,
-                         service_name=service_name,
-                         endpoint_type=endpoint_type)
+        attr = None
+        filter_value = None
+    url = sc.url_for(attr=attr,
+                     filter_value=filter_value,
+                     service_type=service_type,
+                     service_name=service_name,
+                     endpoint_type=endpoint_type)
 
     LOG.debug(_('Cinderclient connection created using URL: %s') % url)
 

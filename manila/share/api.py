@@ -186,9 +186,9 @@ class API(base.Base):
                 QUOTAS.commit(context, reservations, project_id=project_id)
             return
 
-        if share['status'] not in ["available", "error"]:
-            msg = _("Share status must be available or error")
-            raise exception.InvalidShare(reason=msg)
+#        if share['status'] not in ["available", "error"]:
+#            msg = _("Share status must be available or error")
+#            raise exception.InvalidShare(reason=msg)
 
         snapshots = self.db.share_snapshot_get_all_for_share(context, share_id)
         if len(snapshots):
