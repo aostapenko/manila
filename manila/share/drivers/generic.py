@@ -28,6 +28,7 @@ import time
 import threading
 
 from manila import compute
+from manila import context
 from manila import exception
 from manila.image import glance
 from manila import network
@@ -50,8 +51,8 @@ share_opts = [
     cfg.StrOpt('smb_template_config_path',
                default='$state_path/smb.conf',
                help="Path to smb config"),
-    cfg.StrOpt('service_instance_name',
-               default='manila_service_instance',
+    cfg.StrOpt('service_instance_name_template',
+               default='manila_service_instance-%s',
                help="Name of service instance"),
     cfg.StrOpt('service_instance_user',
                default='ubuntu',
@@ -137,6 +138,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def __init__(self, db, *args, **kwargs):
         """Do initialization."""
         super(GenericShareDriver, self).__init__(*args, **kwargs)
+        self.admin_context = context.get_admin_context()
         self.db = db
         self.tenants_locks = {}
         self.tenants_servers = {}
@@ -152,7 +154,6 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         super(GenericShareDriver, self).do_setup(context)
         self.compute_api = compute.API()
         self.volume_api = volume.API()
-        self.image_api = glance.get_default_image_service()
         self._setup_helpers()
 
     def _setup_helpers(self):
@@ -166,7 +167,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                         self.tenants_locks)
 
     def create_share(self, context, share):
-        server = self._get_service_instance(context, share)
+        server = self._get_service_instance(self.admin_context, share)
         volume = self._allocate_container(context, share)
         volume = self._attach_volume(context, share, server, volume)
         self._format_device(server, volume)
@@ -183,7 +184,12 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         mount_path = self._get_mount_path(share)
         command = ['sudo', 'mkdir', '-p', mount_path, ';']
         command.extend(['sudo', 'mount', volume['mountpoint'], mount_path])
-        _ssh_exec(server, command)
+        try:
+            _ssh_exec(server, command)
+        except Exception as e:
+            LOG.debug(e.message)
+            if 'already mounted' not in e.message:
+                raise
 
     def _unmount_device(self, context, share, server):
         mount_path = self._get_mount_path(share)
@@ -199,13 +205,21 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     @synchronized
     def _attach_volume(self, context, share, server, volume):
+        attached_volumes = [vol.id for vol in
+                self.compute_api.instance_volumes_list(context, server['id'])]
+        if volume['status'] == 'in-use':
+            if volume['id'] in attached_volumes:
+                return volume
+            else:
+                raise exception.ManilaException('Volume is already attached '
+                                                'to another instance')
         device_path = self._get_device_path(context, server)
         try:
             self.compute_api.instance_volume_attach(context, server['id'],
                                                     volume['id'], device_path)
         except Exception as e:
-            if 'already attached' not in e.message:
-                raise
+            LOG.debug(e.message)
+            raise
 
         t = time.time()
         while time.time() - t < self.configuration.max_time_to_attach:
@@ -222,8 +236,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _get_volume(self, context, share_id):
         volume_name = self.configuration.volume_name_template + share_id
-        volumes_list = self.volume_api.get_all(context,
-                                         {'display_name': volume_name})
+        search_opts = {'display_name': volume_name}
+        if context.is_admin:
+            search_opts['all_tenants'] = True
+        volumes_list = self.volume_api.get_all(context, search_opts)
         volume = None
         if len(volumes_list):
             volume = volumes_list[0]
@@ -267,15 +283,25 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         device_name = last_used_name[:-1] + chr(ord(last_used_name[-1]) + 1)
         return device_name
 
+    def _get_service_instance_name(self, share):
+        return self.configuration.service_instance_name_template % \
+                    share['project_id']
+
     @synchronized
     def _get_service_instance(self, context, share, create=True):
         server = self.tenants_servers.get(share['project_id'], None)
-        servers = self.compute_api.server_list(context,
-                    {'name': self.configuration.service_instance_name})
+        service_instance_name = self._get_service_instance_name(share)
+        search_opts = {'name': service_instance_name}
+        all_tenants = False
+        if context.is_admin:
+            all_tenants = True
+        servers = self.compute_api.server_list(context, search_opts,
+                                               all_tenants)
         new_server = None
         if not servers:
             if create:
-                new_server = self._create_service_instance(context)
+                new_server = self._create_service_instance(context,
+                                                        service_instance_name)
         elif len(servers) > 1:
             raise exception.ManilaException('Ambigious service instances')
         else:
@@ -311,9 +337,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                           public_key)
         return keypair.name
 
-    def _create_service_instance(self, context):
-        images = [image['id'] for image in self.image_api.detail(context)
-                if image['name'] == self.configuration.service_image_name]
+    def _create_service_instance(self, context, instance_name):
+        images = [image.id for image in self.compute_api.image_list(context)
+                if image.name == self.configuration.service_image_name]
         if not images:
             raise exception.ManilaException('No appropriate image was found')
         elif len(images) > 1:
@@ -321,7 +347,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
         key_name = self._get_key(context)
         service_instance = self.compute_api.server_create(context,
-                                self.configuration.service_instance_name,
+                                instance_name,
                                 images[0],
                                 self.configuration.service_instance_flavor_id,
                                 key_name, None, None)
@@ -418,31 +444,17 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         # Note(zhiteng): These information are driver/backend specific,
         # each driver may define these values in its own config options
         # or fetch from driver specific configuration file.
-        data["share_backend_name"] = 'LVM'
+        data["share_backend_name"] = 'Cinder Volumes'
         data["vendor_name"] = 'Open Source'
         data["driver_version"] = '1.0'
         data["storage_protocol"] = 'NFS_CIFS'
 
-        data['total_capacity_gb'] = 1
-        data['free_capacity_gb'] = 1
+        data['total_capacity_gb'] = 9999999999
+        data['free_capacity_gb'] = 9999999999
         data['reserved_percentage'] = \
             self.configuration.reserved_share_percentage
         data['QoS_support'] = False
 
-#        try:
-#            out, err = self._execute('vgs', '--noheadings', '--nosuffix',
-#                                     '--unit=G', '-o', 'name,size,free',
-#                                     self.configuration.share_volume_group,
-#                                     run_as_root=True)
-#        except exception.ProcessExecutionError as exc:
-#            LOG.error(_("Error retrieving volume status: %s") % exc.stderr)
-#            out = False
-#
-#        if out:
-#            share = out.split()
-#            data['total_capacity_gb'] = float(share[1])
-#            data['free_capacity_gb'] = float(share[2])
-#
         self._stats = data
 
     def create_share_from_snapshot(self, context, share, snapshot):
@@ -490,9 +502,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def ensure_share(self, context, share):
         """Ensure that storage are mounted and exported."""
-#        server = self._get_service_instance(context, share)
-#        volume = self._allocate_container(context, share)
-#        self._mount_volume(context, share['project_id'], server, volume)
+        server = self._get_service_instance(context, share)
+        volume = self._get_volume(context, share['id'])
+        volume = self._attach_volume(context, share, server, volume)
+        self._mount_device(context, share, server, volume)
+        self._get_helper(share).create_export(server, share['name'])
 
     def allow_access(self, context, share, access):
         """Allow access to the share."""
@@ -634,6 +648,7 @@ class CIFSHelper(NASHelperBase):
             LOG.debug(e.message)
         self._write_remote_config(local_config, server)
         _ssh_exec(server, ['sudo', 'smbd', '-s', self.config_path])
+        self._restart_service(server)
 
     def create_export(self, server, share_name, recreate=False):
         """Create new export, delete old one if exists."""
