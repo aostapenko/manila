@@ -20,7 +20,6 @@ Generic Driver for shares.
 """
 
 import ConfigParser
-import math
 import os
 import re
 import shutil
@@ -30,7 +29,6 @@ import threading
 from manila import compute
 from manila import context
 from manila import exception
-from manila.image import glance
 from manila import network
 from manila.openstack.common import importutils
 from manila.openstack.common import log as logging
@@ -241,7 +239,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             search_opts['all_tenants'] = True
         volumes_list = self.volume_api.get_all(context, search_opts)
         volume = None
-        if len(volumes_list):
+        if len(volumes_list) == 1:
             volume = volumes_list[0]
         return volume
 
