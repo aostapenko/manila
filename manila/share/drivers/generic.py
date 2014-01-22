@@ -62,10 +62,10 @@ share_opts = [
                default='manila-service',
                help="Volume name template"),
     cfg.StrOpt('path_to_public_key',
-               default='/home/andrei/.ssh/id_rsa.pub',
+               default='/etc/ssh/ssh_host_rsa_key.pub',
                help="Volume name template"),
     cfg.StrOpt('path_to_private_key',
-               default='/home/andrei/.ssh/id_rsa',
+               default='/etc/ssh/ssh_host_rsa_key',
                help="Volume name template"),
     cfg.StrOpt('volume_snapshot_name_template',
                default='manila-snapshot-',
@@ -296,14 +296,19 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         servers = self.compute_api.server_list(context, search_opts,
                                                all_tenants)
         new_server = None
+
+        if len(servers) > 1:
+            raise exception.ManilaException('Ambigious service instances')
+        elif len(servers) == 1:
+            new_server = servers[0]
+            if new_server['status'] != 'ACTIVE':
+                self.compute_api.server_delete(context, new_server['id'])
+                servers = []
+
         if not servers:
             if create:
                 new_server = self._create_service_instance(context,
                                                         service_instance_name)
-        elif len(servers) > 1:
-            raise exception.ManilaException('Ambigious service instances')
-        else:
-            new_server = servers[0]
 
         if server is None and new_server is not None:
              for helper in self._helpers.values():
