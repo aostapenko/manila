@@ -276,11 +276,12 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _get_device_path(self, context, server):
         volumes = self.compute_api.instance_volumes_list(context, server['id'])
-        if not volumes:
-            return '/dev/vdb'
-        last_used_name = sorted([volume.device for volume in volumes
-                if '/dev/vd' in volume.device])[-1]
-        device_name = last_used_name[:-1] + chr(ord(last_used_name[-1]) + 1)
+        used_literals = set(volume.device[-1] for volume in volumes
+                            if '/dev/vd' in volume.device)
+        lit = 'b'
+        while lit in used_literals:
+            lit = chr(ord(lit) + 1)
+        device_name = '/dev/vd' + lit
         return device_name
 
     def _get_service_instance_name(self, share):
