@@ -465,7 +465,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         server = self._get_service_instance(context, share)
         volume = self._allocate_container(context, share, snapshot)
         self._attach_volume(context, share, server, volume)
-        return server['networks'].values()[0][0]
+        self._mount_device(context, share, server, volume)
+        location = self._get_helper(share).create_export(server,
+                                                         share['name'])
+        return location
 
     def delete_share(self, context, share):
         server = self._get_service_instance(context, share, create=False)
