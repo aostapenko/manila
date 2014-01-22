@@ -56,26 +56,28 @@ share_opts = [
                default='ubuntu',
                help="User in service instance"),
     cfg.StrOpt('volume_name_template',
-               default='manila-share-',
+               default='manila-share-%s',
                help="Volume name template"),
     cfg.StrOpt('manila_service_keypair_name',
                default='manila-service',
-               help="Volume name template"),
+               help="Name of keypair that will be created and used "
+               "for service instance"),
     cfg.StrOpt('path_to_public_key',
                default='/etc/ssh/ssh_host_rsa_key.pub',
-               help="Volume name template"),
+               help="Path to hosts public key"),
     cfg.StrOpt('path_to_private_key',
                default='/etc/ssh/ssh_host_rsa_key',
-               help="Volume name template"),
+               help="Path to hosts private key"),
     cfg.StrOpt('volume_snapshot_name_template',
-               default='manila-snapshot-',
-               help="Volume name template"),
+               default='manila-snapshot-%s',
+               help="Volume snapshot name template"),
     cfg.IntOpt('max_time_to_build_instance',
                default=600,
                help="Maximum time to wait for creating service instance"),
     cfg.StrOpt('share_mount_path',
                default='/shares',
-               help="Maximum time to wait for creating service instance"),
+               help="Parent path in service instance where shares "
+               "will be mounted"),
     cfg.IntOpt('max_time_to_create_volume',
                default=120,
                help="Maximum time to wait for creating cinder volume"),
@@ -88,7 +90,7 @@ share_opts = [
                "creation"),
     cfg.StrOpt('smb_config_path',
                default='$share_mount_path/smb.conf',
-               help="Path to smb config"),
+               help="Path to smb config in service instance"),
     cfg.ListOpt('share_lvm_helpers',
                 default=[
                     'CIFS=manila.share.drivers.generic.CIFSHelper',
@@ -233,7 +235,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return volume
 
     def _get_volume(self, context, share_id):
-        volume_name = self.configuration.volume_name_template + share_id
+        volume_name = self.configuration.volume_name_template % share_id
         search_opts = {'display_name': volume_name}
         if context.is_admin:
             search_opts['all_tenants'] = True
@@ -245,7 +247,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _get_volume_snapshot(self, context, snapshot_id):
         volume_snapshot_name = self.configuration.\
-                volume_snapshot_name_template + snapshot_id
+                volume_snapshot_name_template % snapshot_id
         volume_snapshot_list = self.volume_api.get_all_snapshots(context,
                                         {'display_name': volume_snapshot_name})
         volume_snapshot = None
@@ -390,7 +392,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             volume_snapshot = self._get_volume_snapshot(context,
                                                         snapshot['id'])
         volume = self.volume_api.create(context, share['size'],
-                     self.configuration.volume_name_template + share['id'], '',
+                     self.configuration.volume_name_template % share['id'], '',
                      snapshot=volume_snapshot)
 
         t = time.time()
@@ -408,7 +410,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _deallocate_container(self, context, share):
         """Deletes cinder volume for share."""
-        volume_name = self.configuration.volume_name_template + share['id']
+        volume_name = self.configuration.volume_name_template % share['id']
         volumes_list = self.volume_api.get_all(context,
                                          {'display_name': volume_name})
         volume = None
@@ -482,7 +484,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         """Creates a snapshot."""
         volume = self._get_volume(context, snapshot['share_id'])
         volume_snapshot_name = self.configuration.\
-                volume_snapshot_name_template + snapshot['id']
+                volume_snapshot_name_template % snapshot['id']
         volume_snapshot = self.volume_api.create_snapshot_force(context,
                                               volume['id'],
                                               volume_snapshot_name,
