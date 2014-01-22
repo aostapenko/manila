@@ -205,9 +205,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     @synchronized
     def _attach_volume(self, context, share, server, volume):
-        attached_volumes = [vol.id for vol in
-                self.compute_api.instance_volumes_list(context, server['id'])]
         if volume['status'] == 'in-use':
+            attached_volumes = [vol.id for vol in
+                self.compute_api.instance_volumes_list(context, server['id'])]
             if volume['id'] in attached_volumes:
                 return volume
             else:
