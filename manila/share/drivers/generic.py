@@ -464,7 +464,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         """Is called to create share from snapshot."""
         server = self._get_service_instance(context, share)
         volume = self._allocate_container(context, share, snapshot)
-        self._attach_volume(context, share, server, volume)
+        volume = self._attach_volume(context, share, server, volume)
         self._mount_device(context, share, server, volume)
         location = self._get_helper(share).create_export(server,
                                                          share['name'])
