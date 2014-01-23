@@ -79,7 +79,7 @@ share_opts = [
                help="Parent path in service instance where shares "
                "will be mounted"),
     cfg.IntOpt('max_time_to_create_volume',
-               default=120,
+               default=180,
                help="Maximum time to wait for creating cinder volume"),
     cfg.IntOpt('max_time_to_attach',
                default=120,
@@ -506,8 +506,21 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def delete_snapshot(self, context, snapshot):
         """Deletes a snapshot."""
         volume_snapshot = self._get_volume_snapshot(context, snapshot['id'])
-        if volume_snapshot:
-            self.volume_api.delete_snapshot(context, volume_snapshot['id'])
+        if volume_snapshot is None:
+            return
+        self.volume_api.delete_snapshot(context, volume_snapshot['id'])
+        t = time.time()
+        while time.time() - t < self.configuration.max_time_to_create_volume:
+            try:
+                snapshot = self.volume_api.get_snapshot(context,
+                                                        volume_snapshot['id'])
+            except Exception as e:
+                if 'could not be found' not in e.message:
+                    raise
+                break
+            time.sleep(1)
+        else:
+            raise exception.ManilaException('Volume deletion error')
 
     def ensure_share(self, context, share):
         """Ensure that storage are mounted and exported."""
