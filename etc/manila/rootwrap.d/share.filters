@@ -44,3 +44,6 @@ rm: CommandFilter, /usr/bin/rm, root
 # manila/share/drivers/glusterfs.py: 'gluster', '--xml', 'volume', 'info', '%s'
 # manila/share/drivers/glusterfs.py: 'gluster', 'volume', 'set', '%s', 'nfs.export-dir', '%s'
 gluster: CommandFilter, /usr/sbin/gluster, root
+
+# manila/share/drivers/generic.py: 'ip', 'netns', 'exec', '%s', '%s'
+ip: CommandFilter, /sbin/ip, root
