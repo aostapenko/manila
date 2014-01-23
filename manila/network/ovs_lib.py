@@ -44,9 +44,8 @@ class VifPort:
 
 
 class OVSBridge:
-    def __init__(self, br_name, root_helper):
+    def __init__(self, br_name):
         self.br_name = br_name
-        self.root_helper = root_helper
         self.re_id = self.re_compile_id()
         self.defer_apply_flows = False
         self.deferred_flows = {'add': '', 'mod': '', 'del': ''}
@@ -67,7 +66,7 @@ class OVSBridge:
     def run_vsctl(self, args):
         full_args = ["ovs-vsctl", "--timeout=2"] + args
         try:
-            return utils.execute(full_args, root_helper=self.root_helper)
+            return utils.execute(full_args)
         except Exception as e:
             LOG.error(_("Unable to execute %(cmd)s. Exception: %(exception)s"),
                       {'cmd': full_args, 'exception': e})
@@ -96,8 +95,7 @@ class OVSBridge:
     def run_ofctl(self, cmd, args, process_input=None):
         full_args = ["ovs-ofctl", cmd, self.br_name] + args
         try:
-            return utils.execute(full_args, root_helper=self.root_helper,
-                                 process_input=process_input)
+            return utils.execute(full_args, process_input=process_input)
         except Exception as e:
             LOG.error(_("Unable to execute %(cmd)s. Exception: %(exception)s"),
                       {'cmd': full_args, 'exception': e})
@@ -266,7 +264,7 @@ class OVSBridge:
         args = ["xe", "vif-param-get", "param-name=other-config",
                 "param-key=nicira-iface-id", "uuid=%s" % xs_vif_uuid]
         try:
-            return utils.execute(args, root_helper=self.root_helper).strip()
+            return utils.execute(args).strip()
         except Exception as e:
             LOG.error(_("Unable to execute %(cmd)s. Exception: %(exception)s"),
                       {'cmd': args, 'exception': e})
@@ -345,7 +343,7 @@ class OVSBridge:
 
     def get_local_port_mac(self):
         """Retrieve the mac of the bridge's local port."""
-        address = ip_lib.IPDevice(self.br_name, self.root_helper).link.address
+        address = ip_lib.IPDevice(self.br_name).link.address
         if address:
             return address
         else:
@@ -353,28 +351,28 @@ class OVSBridge:
             raise Exception(msg)
 
 
-def get_bridge_for_iface(root_helper, iface):
+def get_bridge_for_iface(iface):
     args = ["ovs-vsctl", "--timeout=2", "iface-to-br", iface]
     try:
-        return utils.execute(args, root_helper=root_helper).strip()
+        return utils.execute(args).strip()
     except Exception:
         LOG.exception(_("Interface %s not found."), iface)
         return None
 
 
-def get_bridges(root_helper):
+def get_bridges():
     args = ["ovs-vsctl", "--timeout=2", "list-br"]
     try:
-        return utils.execute(args, root_helper=root_helper).strip().split("\n")
+        return utils.execute(args).strip().split("\n")
     except Exception as e:
         LOG.exception(_("Unable to retrieve bridges. Exception: %s"), e)
         return []
 
 
-def get_installed_ovs_usr_version(root_helper):
+def get_installed_ovs_usr_version():
     args = ["ovs-vsctl", "--version"]
     try:
-        cmd = utils.execute(args, root_helper=root_helper)
+        cmd = utils.execute(args)
         ver = re.findall("\d+\.\d+", cmd)[0]
         return ver
     except Exception:
@@ -393,11 +391,11 @@ def get_installed_ovs_klm_version():
         LOG.exception(_("Unable to retrieve OVS kernel module version."))
 
 
-def get_bridge_external_bridge_id(root_helper, bridge):
+def get_bridge_external_bridge_id(bridge):
     args = ["ovs-vsctl", "--timeout=2", "br-get-external-id",
             bridge, "bridge-id"]
     try:
-        return utils.execute(args, root_helper=root_helper).strip()
+        return utils.execute(args).strip()
     except Exception:
         LOG.exception(_("Bridge %s not found."), bridge)
         return None
