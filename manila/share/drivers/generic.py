@@ -190,6 +190,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             LOG.debug(e.message)
             if 'already mounted' not in e.message:
                 raise
+        command = ['sudo', 'chmod', '777', mount_path]
+        _ssh_exec(server, command)
 
     def _unmount_device(self, context, share, server):
         mount_path = self._get_mount_path(share)
