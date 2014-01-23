@@ -59,7 +59,6 @@ class LinuxInterfaceDriver(object):
         ip_cidrs: list of 'X.X.X.X/YY' strings
         """
         device = ip_lib.IPDevice(device_name,
-                                 self.root_helper,
                                  namespace=namespace)
 
         previous = {}
@@ -133,7 +132,7 @@ class OVSInterfaceDriver(LinuxInterfaceDriver):
                 'external-ids:iface-status=active',
                 '--', 'set', 'Interface', device_name,
                 'external-ids:attached-mac=%s' % mac_address]
-        utils.execute(cmd, self.root_helper)
+        utils.execute(cmd)
 
     def plug(self, network_id, port_id, device_name, mac_address,
              bridge=None, namespace=None, prefix=None):
@@ -144,10 +143,9 @@ class OVSInterfaceDriver(LinuxInterfaceDriver):
         self.check_bridge_exists(bridge)
 
         if not ip_lib.device_exists(device_name,
-                                    self.root_helper,
                                     namespace=namespace):
 
-            ip = ip_lib.IPWrapper(self.root_helper)
+            ip = ip_lib.IPWrapper()
             tap_name = self._get_tap_name(device_name, prefix)
 
             if self.conf.ovs_use_veth:
@@ -187,13 +185,12 @@ class OVSInterfaceDriver(LinuxInterfaceDriver):
 
         tap_name = self._get_tap_name(device_name, prefix)
         self.check_bridge_exists(bridge)
-        ovs = ovs_lib.OVSBridge(bridge, self.root_helper)
+        ovs = ovs_lib.OVSBridge(bridge)
 
         try:
             ovs.delete_port(tap_name)
             if self.conf.ovs_use_veth:
                 device = ip_lib.IPDevice(device_name,
-                                         self.root_helper,
                                          namespace)
                 device.link.delete()
                 LOG.debug(_("Unplugged interface '%s'"), device_name)
@@ -217,16 +214,15 @@ class IVSInterfaceDriver(LinuxInterfaceDriver):
 
     def _ivs_add_port(self, device_name, port_id, mac_address):
         cmd = ['ivs-ctl', 'add-port', device_name]
-        utils.execute(cmd, self.root_helper)
+        utils.execute(cmd)
 
     def plug(self, network_id, port_id, device_name, mac_address,
              bridge=None, namespace=None, prefix=None):
         """Plug in the interface."""
         if not ip_lib.device_exists(device_name,
-                                    self.root_helper,
                                     namespace=namespace):
 
-            ip = ip_lib.IPWrapper(self.root_helper)
+            ip = ip_lib.IPWrapper()
             tap_name = self._get_tap_name(device_name, prefix)
 
             root_dev, ns_dev = ip.add_veth(tap_name, device_name)
@@ -254,9 +250,8 @@ class IVSInterfaceDriver(LinuxInterfaceDriver):
         tap_name = self._get_tap_name(device_name, prefix)
         try:
             cmd = ['ivs-ctl', 'del-port', tap_name]
-            utils.execute(cmd, self.root_helper)
+            utils.execute(cmd)
             device = ip_lib.IPDevice(device_name,
-                                     self.root_helper,
                                      namespace)
             device.link.delete()
             LOG.debug(_("Unplugged interface '%s'"), device_name)
@@ -274,9 +269,8 @@ class BridgeInterfaceDriver(LinuxInterfaceDriver):
              bridge=None, namespace=None, prefix=None):
         """Plugin the interface."""
         if not ip_lib.device_exists(device_name,
-                                    self.root_helper,
                                     namespace=namespace):
-            ip = ip_lib.IPWrapper(self.root_helper)
+            ip = ip_lib.IPWrapper()
 
             # Enable agent to define the prefix
             if prefix:
@@ -300,7 +294,7 @@ class BridgeInterfaceDriver(LinuxInterfaceDriver):
 
     def unplug(self, device_name, bridge=None, namespace=None, prefix=None):
         """Unplug the interface."""
-        device = ip_lib.IPDevice(device_name, self.root_helper, namespace)
+        device = ip_lib.IPDevice(device_name, namespace)
         try:
             device.link.delete()
             LOG.debug(_("Unplugged interface '%s'"), device_name)
