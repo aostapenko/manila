@@ -105,8 +105,7 @@ network_api = network.API()
 
 
 def synchronized(f):
-    """Decorates function with unique locks for each tenant
-    """
+    """Decorates function with unique locks for each tenant."""
     def wrapped_func(self, arg, instance, *args, **kwargs):
         tenant_id = instance.get('project_id', None)
         if tenant_id is None:
@@ -122,7 +121,7 @@ def _ssh_exec(server, command):
               network_api.list_ports(device_id=server['id'])][0]
     netns = 'qdhcp-' + net_id
     user = CONF.service_instance_user
-    cmd = ['ip', 'netns', 'exec', netns, 'ssh', user + '@' + ip,
+    cmd = ['ip', 'netns', 'exec', netns, 'ssh', '@'.join([user, ip]),
            '-o StrictHostKeyChecking=no', '-i', CONF.path_to_private_key]
     cmd.extend(command)
     return utils.execute(*cmd, run_as_root=True)
