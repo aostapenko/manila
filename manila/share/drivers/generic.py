@@ -337,7 +337,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             keypair = keypairs[0]
             if keypair.public_key != public_key:
-                LOG.debug('Root public key differs from existing keypair. '
+                LOG.debug('Public key differs from existing keypair. '
                           'Creating new keypair')
                 self.compute_api.keypair_delete(context, keypair.id)
                 keypair = self.compute_api.keypair_import(context,
