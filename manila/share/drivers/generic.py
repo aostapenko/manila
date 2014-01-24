@@ -29,7 +29,7 @@ import threading
 from manila import compute
 from manila import context
 from manila import exception
-from manila import network
+from manila.network.neutron import api 
 from manila.openstack.common import importutils
 from manila.openstack.common import log as logging
 from manila.share import driver
@@ -37,8 +37,6 @@ from manila import volume
 from manila import utils
 
 from oslo.config import cfg
-
-from manila.network.neutron import api 
 
 LOG = logging.getLogger(__name__)
 
@@ -102,7 +100,7 @@ share_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(share_opts)
-network_api = api.API()
+neutron_api = api.API()
 
 
 def synchronized(f):
@@ -119,7 +117,7 @@ def synchronized(f):
 def _ssh_exec(server, command):
     ip = _get_server_ip(server)
     net_id = [port['network_id'] for port in
-              network_api.list_ports(device_id=server['id'])][0]
+              neutron_api.list_ports(device_id=server['id'])][0]
     netns = 'qdhcp-' + net_id
     user = CONF.service_instance_user
     cmd = ['ip', 'netns', 'exec', netns, 'ssh', '@'.join([user, ip]),
@@ -312,11 +310,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
         if not servers:
             if create:
-                instance_port = share['network_info'].network_allocations[0].id
                 new_server = self.\
                         _create_service_instance(context,
                                                  service_instance_name,
-                                                 instance_port)
+                                                    share)
 
         if server is None and new_server is not None:
              for helper in self._helpers.values():
@@ -348,7 +345,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                           public_key)
         return keypair.name
 
-    def _create_service_instance(self, context, instance_name, port):
+    def _create_service_instance(self, context, instance_name, share):
         images = [image.id for image in self.compute_api.image_list(context)
                 if image.name == self.configuration.service_image_name]
         if not images:
@@ -357,6 +354,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.ManilaException('Ambigious image name')
 
         key_name = self._get_key(context)
+
+        port = neutron_api.create_port('service',
+                    share['network_info']['neutron_net_id'],
+                    subnet_id=share['network_info']['neutron_subnet_id'])['id']
         service_instance = self.compute_api.server_create(context,
                                 instance_name,
                                 images[0],
@@ -559,7 +560,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.InvalidShare(reason='Wrong share type')
 
     def get_network_allocations_number(self):
-        return 1
+        return 0
 
     def setup_network(self, network_info):
         pass
