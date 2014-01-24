@@ -38,6 +38,7 @@ from manila import utils
 
 from oslo.config import cfg
 
+from manila.network.neutron import api 
 
 LOG = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ share_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(share_opts)
-network_api = network.API()
+network_api = api.API()
 
 
 def synchronized(f):
@@ -311,8 +312,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
         if not servers:
             if create:
-                new_server = self._create_service_instance(context,
-                                                        service_instance_name)
+                instance_port = share['network_info'].network_allocations[0].id
+                new_server = self.\
+                        _create_service_instance(context,
+                                                 service_instance_name,
+                                                 instance_port)
 
         if server is None and new_server is not None:
              for helper in self._helpers.values():
@@ -344,7 +348,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                           public_key)
         return keypair.name
 
-    def _create_service_instance(self, context, instance_name):
+    def _create_service_instance(self, context, instance_name, port):
         images = [image.id for image in self.compute_api.image_list(context)
                 if image.name == self.configuration.service_image_name]
         if not images:
@@ -357,7 +361,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                 instance_name,
                                 images[0],
                                 self.configuration.service_instance_flavor_id,
-                                key_name, None, None)
+                                key_name, None, None, nics=[{'port-id': port}])
 
         t = time.time()
         while time.time() - t < self.configuration.max_time_to_build_instance:
@@ -554,6 +558,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             raise exception.InvalidShare(reason='Wrong share type')
 
+    def get_network_allocations_number(self):
+        return 1
+
+    def setup_network(self, network_info):
+        pass
 
 class NASHelperBase(object):
     """Interface to work with share."""
