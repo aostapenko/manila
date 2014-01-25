@@ -90,6 +90,8 @@ share_opts = [
     cfg.StrOpt('smb_config_path',
                default='$share_mount_path/smb.conf',
                help="Path to smb config in service instance"),
+    cfg.StrOpt('service_tenant_id',
+               help="Tenant id of service tenant"),
     cfg.ListOpt('share_lvm_helpers',
                 default=[
                     'CIFS=manila.share.drivers.generic.CIFSHelper',
@@ -355,14 +357,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
         key_name = self._get_key(context)
 
-        port = neutron_api.create_port('service',
-                    share['network_info']['neutron_net_id'],
-                    subnet_id=share['network_info']['neutron_subnet_id'])['id']
         service_instance = self.compute_api.server_create(context,
                                 instance_name,
                                 images[0],
                                 self.configuration.service_instance_flavor_id,
-                                key_name, None, None, nics=[{'port-id': port}])
+                                key_name, None, None)
 
         t = time.time()
         while time.time() - t < self.configuration.max_time_to_build_instance:
