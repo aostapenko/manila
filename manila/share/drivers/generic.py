@@ -20,6 +20,7 @@ Generic Driver for shares.
 """
 
 import ConfigParser
+import netaddr 
 import os
 import re
 import shutil
@@ -90,6 +91,12 @@ share_opts = [
     cfg.StrOpt('smb_config_path',
                default='$share_mount_path/smb.conf',
                help="Path to smb config in service instance"),
+    cfg.StrOpt('service_network_name',
+               default='manila_service_network',
+               help="Name of manila serivce network"),
+    cfg.StrOpt('service_network_cidr',
+               default='11.11.0.0/24',
+               help="Name of manila serivce network"),
     cfg.StrOpt('service_tenant_id',
                help="Tenant id of service tenant"),
     cfg.ListOpt('share_lvm_helpers',
@@ -142,6 +149,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self.db = db
         self.tenants_locks = {}
         self.tenants_servers = {}
+        self.service_tenant_id = self.configuration.service_tenant_id
         self.configuration.append_config_values(share_opts)
         self._helpers = None
 
@@ -154,7 +162,21 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         super(GenericShareDriver, self).do_setup(context)
         self.compute_api = compute.API()
         self.volume_api = volume.API()
+        self.service_network_id = self._get_service_network()
         self._setup_helpers()
+
+    def _get_service_network(self):
+        service_network_name = self.configuration.service_network_name
+        networks = [network for network in neutron_api.
+                    get_all_tenant_networks(self.service_tenant_id)
+                    if network['name'] == service_network_name]
+        if len(networks) > 1:
+            raise exception.ManilaException('Ambigious service networks')
+        elif not networks:
+            return neutron_api.network_create(self.service_tenant_id,
+                                              service_network_name)['id']
+        else:
+            return networks[0]['id']
 
     def _setup_helpers(self):
         """Initializes protocol-specific NAS drivers."""
@@ -356,12 +378,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.ManilaException('Ambigious image name')
 
         key_name = self._get_key(context)
-
+        port = self._prepare_network_for_instance(context, share)
         service_instance = self.compute_api.server_create(context,
                                 instance_name,
                                 images[0],
                                 self.configuration.service_instance_flavor_id,
-                                key_name, None, None)
+                                key_name, None, None,
+                                nics=[{'port-id': port['id']}])
 
         t = time.time()
         while time.time() - t < self.configuration.max_time_to_build_instance:
@@ -391,6 +414,60 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 time.sleep(5)
         else:
             raise exception.ManilaException('Server waiting timeout')
+
+    def _prepare_network_for_instance(self, context, share):
+        service_network = neutron_api.get_network(self.service_network_id)
+        all_service_subnets = [neutron_api.get_subnet(subnet_id)
+                               for subnet_id in service_network['subnets']]
+        share_subnet_id = share['network_info']['neutron_subnet_id']
+        service_subnets = [subnet for subnet in all_service_subnets 
+                           if subnet['name'] == share_subnet_id]
+        if len(service_subnets) > 1:
+            raise exception.ManilaException('Ambigious subnets')
+        elif not service_subnets:
+            service_subnet = neutron_api.subnet_create(self.service_tenant_id,
+                        self.service_network_id,
+                        share_subnet_id,
+                        self._get_cidr_for_subnet(all_service_subnets))
+        else:
+            service_subnet = service_subnets[0]
+
+        service_routers = [router for router in neutron_api.router_list() 
+             if router['name'] == share_subnet_id]
+        if len(service_routers) > 1:
+            raise exception.ManilaException('Ambigious routers')
+        elif not service_routers:
+            service_router = neutron_api.router_create(self.service_tenant_id,
+                                                       share_subnet_id)
+        else:
+            service_router = service_routers[0]
+        try:
+            neutron_api.router_add_interface(service_router['id'],
+                                             service_subnet['id'])
+        except Exception as e:
+            LOG.debug(e)
+            if 'already has' not in str(e):
+                raise
+        try:
+            neutron_api.router_add_interface(service_router['id'],
+                                             share_subnet_id)
+        except Exception as e:
+            LOG.debug(e)
+            if 'already has' not in str(e):
+                raise
+        return neutron_api.create_port(self.service_tenant_id,
+                                       self.service_network_id,
+                                       subnet_id=service_subnet['id'])
+
+    def _get_cidr_for_subnet(self, subnets):
+        used_cidrs = set(subnet['cidr'] for subnet in subnets)
+        serv_cidr = netaddr.IPNetwork(self.configuration.service_network_cidr)
+        for subnet in serv_cidr.subnet(29):
+            cidr = str(subnet.cidr)
+            if cidr not in used_cidrs:
+                return cidr
+        else:
+            raise exception.ManilaException('No available cidrs')
 
     def _allocate_container(self, context, share, snapshot=None):
         volume_snapshot = None
