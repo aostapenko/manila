@@ -30,6 +30,8 @@ import threading
 from manila import compute
 from manila import context
 from manila import exception
+from manila.network import interface
+from manila.network import ip_lib 
 from manila.network.neutron import api 
 from manila.openstack.common import importutils
 from manila.openstack.common import log as logging
@@ -63,10 +65,10 @@ share_opts = [
                help="Name of keypair that will be created and used "
                "for service instance"),
     cfg.StrOpt('path_to_public_key',
-               default='/etc/ssh/ssh_host_rsa_key.pub',
+               default='/home/stack/id_rsa.pub',
                help="Path to hosts public key"),
     cfg.StrOpt('path_to_private_key',
-               default='/etc/ssh/ssh_host_rsa_key',
+               default='/home/stack/id_rsa',
                help="Path to hosts private key"),
     cfg.StrOpt('volume_snapshot_name_template',
                default='manila-snapshot-%s',
@@ -109,7 +111,6 @@ share_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(share_opts)
-neutron_api = api.API()
 
 
 def synchronized(f):
@@ -125,14 +126,11 @@ def synchronized(f):
 
 def _ssh_exec(server, command):
     ip = _get_server_ip(server)
-    net_id = [port['network_id'] for port in
-              neutron_api.list_ports(device_id=server['id'])][0]
-    netns = 'qdhcp-' + net_id
     user = CONF.service_instance_user
-    cmd = ['ip', 'netns', 'exec', netns, 'ssh', '@'.join([user, ip]),
+    cmd = ['ssh', '@'.join([user, ip]),
            '-o StrictHostKeyChecking=no', '-i', CONF.path_to_private_key]
     cmd.extend(command)
-    return utils.execute(*cmd, run_as_root=True)
+    return utils.execute(*cmd)
 
 
 def _get_server_ip(server):
@@ -148,7 +146,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self.admin_context = context.get_admin_context()
         self.db = db
         self.tenants_locks = {}
-        self.tenants_servers = {}
+        self.share_network_servers = {}
         self.service_tenant_id = self.configuration.service_tenant_id
         self.configuration.append_config_values(share_opts)
         self._helpers = None
@@ -162,18 +160,20 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         super(GenericShareDriver, self).do_setup(context)
         self.compute_api = compute.API()
         self.volume_api = volume.API()
+        self.neutron_api = api.API()
         self.service_network_id = self._get_service_network()
+        self._setup_connectivity_with_instances()
         self._setup_helpers()
 
     def _get_service_network(self):
         service_network_name = self.configuration.service_network_name
-        networks = [network for network in neutron_api.
+        networks = [network for network in self.neutron_api.
                     get_all_tenant_networks(self.service_tenant_id)
                     if network['name'] == service_network_name]
         if len(networks) > 1:
             raise exception.ManilaException('Ambigious service networks')
         elif not networks:
-            return neutron_api.network_create(self.service_tenant_id,
+            return self.neutron_api.network_create(self.service_tenant_id,
                                               service_network_name)['id']
         else:
             return networks[0]['id']
@@ -189,6 +189,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                         self.tenants_locks)
 
     def create_share(self, context, share):
+        if share['network_info'] is None:
+            raise exception.ManilaException('Share Network is not specified')
         server = self._get_service_instance(self.admin_context, share)
         volume = self._allocate_container(context, share)
         volume = self._attach_volume(context, share, server, volume)
@@ -310,11 +312,12 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _get_service_instance_name(self, share):
         return self.configuration.service_instance_name_template % \
-                    share['project_id']
+                    share['share_network_id']
 
     @synchronized
     def _get_service_instance(self, context, share, create=True):
-        server = self.tenants_servers.get(share['project_id'], None)
+        server = self.share_network_servers.get(share['share_network_id'],
+                                                None)
         service_instance_name = self._get_service_instance_name(share)
         search_opts = {'name': service_instance_name}
         all_tenants = False
@@ -342,7 +345,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if server is None and new_server is not None:
              for helper in self._helpers.values():
                 helper.init_helper(new_server)
-        self.tenants_servers[share['project_id']] = new_server
+        self.share_network_servers[share['share_network_id']] = new_server
         return new_server
 
     def _get_key(self, context):
@@ -378,7 +381,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.ManilaException('Ambigious image name')
 
         key_name = self._get_key(context)
-        port = self._prepare_network_for_instance(context, share)
+
+        port = self._setup_network_for_instance(context, share)
+        self._setup_connectivity_with_instances()
         service_instance = self.compute_api.server_create(context,
                                 instance_name,
                                 images[0],
@@ -415,9 +420,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             raise exception.ManilaException('Server waiting timeout')
 
-    def _prepare_network_for_instance(self, context, share):
-        service_network = neutron_api.get_network(self.service_network_id)
-        all_service_subnets = [neutron_api.get_subnet(subnet_id)
+    def _setup_network_for_instance(self, context, share):
+        service_network = self.neutron_api.get_network(self.service_network_id)
+        all_service_subnets = [self.neutron_api.get_subnet(subnet_id)
                                for subnet_id in service_network['subnets']]
         share_subnet_id = share['network_info']['neutron_subnet_id']
         service_subnets = [subnet for subnet in all_service_subnets 
@@ -425,39 +430,101 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if len(service_subnets) > 1:
             raise exception.ManilaException('Ambigious subnets')
         elif not service_subnets:
-            service_subnet = neutron_api.subnet_create(self.service_tenant_id,
+            service_subnet = \
+                    self.neutron_api.subnet_create(self.service_tenant_id,
                         self.service_network_id,
                         share_subnet_id,
                         self._get_cidr_for_subnet(all_service_subnets))
         else:
             service_subnet = service_subnets[0]
 
-        service_routers = [router for router in neutron_api.router_list() 
+        service_routers = [router for router in self.neutron_api.router_list() 
              if router['name'] == share_subnet_id]
         if len(service_routers) > 1:
             raise exception.ManilaException('Ambigious routers')
         elif not service_routers:
-            service_router = neutron_api.router_create(self.service_tenant_id,
+            service_router = self.neutron_api.router_create(
+                                                       self.service_tenant_id,
                                                        share_subnet_id)
         else:
             service_router = service_routers[0]
         try:
-            neutron_api.router_add_interface(service_router['id'],
-                                             service_subnet['id'])
+            self.neutron_api.router_add_interface(service_router['id'],
+                                                  service_subnet['id'])
         except Exception as e:
             LOG.debug(e)
             if 'already has' not in str(e):
                 raise
         try:
-            neutron_api.router_add_interface(service_router['id'],
-                                             share_subnet_id)
+            self.neutron_api.router_add_interface(service_router['id'],
+                                                  share_subnet_id)
         except Exception as e:
             LOG.debug(e)
             if 'already has' not in str(e):
                 raise
-        return neutron_api.create_port(self.service_tenant_id,
+        return self.neutron_api.create_port(self.service_tenant_id,
+                                            self.service_network_id,
+                                            subnet_id=service_subnet['id'])
+
+    def _setup_connectivity_with_instances(self):
+        vif_driver = interface.OVSInterfaceDriver()
+        port = self._setup_service_port()
+        interface_name = vif_driver.get_device_name(port)
+        vif_driver.plug(port['id'],
+                        interface_name,
+                        port['mac_address'])
+        ip_cidrs = []
+        for fixed_ip in port['fixed_ips']:
+            subnet = self.neutron_api.get_subnet(fixed_ip['subnet_id'])
+            net = netaddr.IPNetwork(subnet['cidr'])
+            ip_cidr = '%s/%s' % (fixed_ip['ip_address'], net.prefixlen)
+            ip_cidrs.append(ip_cidr)
+
+        vif_driver.init_l3(interface_name, ip_cidrs)
+
+        # ensure that interface is first in the list
+        device = ip_lib.IPDevice(interface_name)
+        device.route.pullup_route(interface_name)
+
+        return interface_name
+
+    def _setup_service_port(self):
+        ports = [port for port in self.neutron_api.\
+                 list_ports(device_id='manila-share')]
+        if len(ports) > 1:
+            raise exception.ManilaException('Error. Ambigious service ports')
+        elif not ports:
+            services = self.db.service_get_all_by_topic(self.admin_context,
+                                                        'manila-share')
+            host = services[0]['host'] if services else None
+            if host is None:
+                raise exception.ManilaException('Unable to get host')
+            port = self.neutron_api.create_port(self.service_tenant_id,
                                        self.service_network_id,
-                                       subnet_id=service_subnet['id'])
+                                       device_id='manila-share',
+                                       device_owner='manila:generic_driver',
+                                       host_id=host)
+        else:
+            port = ports[0]
+
+        network = self.neutron_api.get_network(self.service_network_id)
+        subnets = set(network['subnets'])
+        port_fixed_ips = []
+        for fixed_ip in port['fixed_ips']:
+            port_fixed_ips.append({'subnet_id': fixed_ip['subnet_id'],
+                                   'ip_address': fixed_ip['ip_address']})
+            if fixed_ip['subnet_id'] in subnets:
+                subnets.remove(fixed_ip['subnet_id'])
+
+        # If there are subnets here that means that
+        # we need to add those to the port and call update.
+        if subnets:
+            port_fixed_ips.extend(
+                [dict(subnet_id=s) for s in subnets])
+            port = self.neutron_api.update_port_fixed_ips(
+                   port['id'], {'port': {'fixed_ips': port_fixed_ips}})
+
+        return port
 
     def _get_cidr_for_subnet(self, subnets):
         used_cidrs = set(subnet['cidr'] for subnet in subnets)
@@ -537,8 +604,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         data["driver_version"] = '1.0'
         data["storage_protocol"] = 'NFS_CIFS'
 
-        data['total_capacity_gb'] = 9999999999
-        data['free_capacity_gb'] = 9999999999
+        data['total_capacity_gb'] = 'infinite'
+        data['free_capacity_gb'] = 'infinite'
         data['reserved_percentage'] = \
             self.configuration.reserved_share_percentage
         data['QoS_support'] = False

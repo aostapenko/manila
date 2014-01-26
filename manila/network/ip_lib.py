@@ -36,18 +36,17 @@ class SubProcessBase(object):
     def _as_root(self, options, command, args, use_root_namespace=False):
         namespace = self.namespace if not use_root_namespace else None
 
-        return self._execute(options, command, args, namespace,
-                             run_as_root=True)
+        return self._execute(options, command, args, namespace, as_root=True)
 
     @classmethod
-    def _execute(cls, options, command, args, namespace=None):
+    def _execute(cls, options, command, args, namespace=None, as_root=False):
         opt_list = ['-%s' % o for o in options]
         if namespace:
             ip_cmd = ['ip', 'netns', 'exec', namespace, 'ip']
         else:
             ip_cmd = ['ip']
-        return utils.execute(ip_cmd + opt_list + [command] + list(args),
-                             run_as_root=True)
+        total_cmd = ip_cmd + opt_list + [command] + list(args)
+        return utils.execute(*total_cmd, run_as_root=as_root)[0]
 
 
 class IPWrapper(SubProcessBase):
@@ -114,29 +113,6 @@ class IPWrapper(SubProcessBase):
     def add_device_to_namespace(self, device):
         if self.namespace:
             device.link.set_netns(self.namespace)
-
-    def add_vxlan(self, name, vni, group=None, dev=None, ttl=None, tos=None,
-                  local=None, port=None, proxy=False):
-        cmd = ['add', name, 'type', 'vxlan', 'id', vni]
-        if group:
-                cmd.extend(['group', group])
-        if dev:
-                cmd.extend(['dev', dev])
-        if ttl:
-                cmd.extend(['ttl', ttl])
-        if tos:
-                cmd.extend(['tos', tos])
-        if local:
-                cmd.extend(['local', local])
-        if proxy:
-                cmd.append('proxy')
-        # tuple: min,max
-        if port and len(port) == 2:
-                cmd.extend(['port', port[0], port[1]])
-        elif port:
-            raise exception.NetworkVxlanPortRangeError(vxlan_range=port)
-        self._as_root('', 'link', cmd)
-        return (IPDevice(name, self.namespace))
 
     @classmethod
     def get_namespaces(cls):
@@ -434,8 +410,10 @@ class IpNetnsCommand(IpCommandBase):
 def device_exists(device_name, namespace=None):
     try:
         address = IPDevice(device_name, namespace).link.address
-    except RuntimeError:
-        return False
+    except Exception as e:
+        if 'does not exist' in str(e):
+            return False
+        raise
     return bool(address)
 
 
