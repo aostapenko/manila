@@ -42,6 +42,8 @@ OPTS = [
                help=_('Mapping between flavor and LinuxInterfaceDriver')),
 ]
 
+CONF = cfg.CONF
+CONF.register_opts(OPTS)
 
 class LinuxInterfaceDriver(object):
     __metaclass__ = abc.ABCMeta
@@ -50,8 +52,8 @@ class LinuxInterfaceDriver(object):
     DEV_NAME_LEN = 14
     DEV_NAME_PREFIX = 'tap'
 
-    def __init__(self, conf):
-        self.conf = conf
+    def __init__(self):
+        self.conf = CONF 
 
     def init_l3(self, device_name, ip_cidrs, namespace=None):
         """Set the L3 settings for the interface using data from the port.
@@ -84,7 +86,7 @@ class LinuxInterfaceDriver(object):
             raise exception.BridgeDoesNotExist(bridge=bridge)
 
     def get_device_name(self, port):
-        return (self.DEV_NAME_PREFIX + port.id)[:self.DEV_NAME_LEN]
+        return (self.DEV_NAME_PREFIX + port['id'])[:self.DEV_NAME_LEN]
 
     @abc.abstractmethod
     def plug(self, network_id, port_id, device_name, mac_address,
@@ -110,8 +112,8 @@ class OVSInterfaceDriver(LinuxInterfaceDriver):
 
     DEV_NAME_PREFIX = 'tap'
 
-    def __init__(self, conf):
-        super(OVSInterfaceDriver, self).__init__(conf)
+    def __init__(self):
+        super(OVSInterfaceDriver, self).__init__()
         if self.conf.ovs_use_veth:
             self.DEV_NAME_PREFIX = 'ns-'
 
@@ -132,9 +134,9 @@ class OVSInterfaceDriver(LinuxInterfaceDriver):
                 'external-ids:iface-status=active',
                 '--', 'set', 'Interface', device_name,
                 'external-ids:attached-mac=%s' % mac_address]
-        utils.execute(cmd)
+        utils.execute(*cmd, run_as_root=True)
 
-    def plug(self, network_id, port_id, device_name, mac_address,
+    def plug(self, port_id, device_name, mac_address,
              bridge=None, namespace=None, prefix=None):
         """Plug in the interface."""
         if not bridge:
@@ -204,8 +206,8 @@ class IVSInterfaceDriver(LinuxInterfaceDriver):
 
     DEV_NAME_PREFIX = 'tap'
 
-    def __init__(self, conf):
-        super(IVSInterfaceDriver, self).__init__(conf)
+    def __init__(self):
+        super(IVSInterfaceDriver, self).__init__()
         self.DEV_NAME_PREFIX = 'ns-'
 
     def _get_tap_name(self, dev_name, prefix=None):
