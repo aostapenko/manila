@@ -115,12 +115,16 @@ CONF.register_opts(share_opts)
 
 def synchronized(f):
     """Decorates function with unique locks for each tenant."""
-    def wrapped_func(self, arg, instance, *args, **kwargs):
-        tenant_id = instance.get('project_id', None)
-        if tenant_id is None:
-            tenant_id = instance['tenant_id']
-        with self.tenants_locks.setdefault(tenant_id, threading.RLock()):
-            return f(self, arg, instance, *args, **kwargs)
+    def wrapped_func(self, *args, **kwargs):
+        for arg in args:
+            share_network_id = getattr(arg, 'share_network_id', None)
+            if share_network_id:
+                break
+        else:
+            raise exception.ManilaException('Could not get share network id')
+        with self.share_networks_locks.setdefault(share_network_id,
+                                                        threading.RLock()):
+            return f(self, *args, **kwargs)
     return wrapped_func
 
 
@@ -145,8 +149,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         super(GenericShareDriver, self).__init__(*args, **kwargs)
         self.admin_context = context.get_admin_context()
         self.db = db
-        self.tenants_locks = {}
-        self.share_network_servers = {}
+        self.share_networks_locks = {}
+        self.share_networks_servers = {}
         self.service_tenant_id = self.configuration.service_tenant_id
         self.configuration.append_config_values(share_opts)
         self._helpers = None
@@ -185,11 +189,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             share_proto, _, import_str = helper_str.partition('=')
             helper = importutils.import_class(import_str)
             self._helpers[share_proto.upper()] = helper(self._execute,
-                                                        self.configuration,
-                                                        self.tenants_locks)
+                                                    self.configuration,
+                                                    self.share_networks_locks)
 
     def create_share(self, context, share):
-        if share['network_info'] is None:
+        if share['share_network_id'] is None:
             raise exception.ManilaException('Share Network is not specified')
         server = self._get_service_instance(self.admin_context, share)
         volume = self._allocate_container(context, share)
@@ -316,7 +320,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     @synchronized
     def _get_service_instance(self, context, share, create=True):
-        server = self.share_network_servers.get(share['share_network_id'],
+        server = self.share_networks_servers.get(share['share_network_id'],
                                                 None)
         service_instance_name = self._get_service_instance_name(share)
         search_opts = {'name': service_instance_name}
@@ -337,15 +341,16 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
         if not servers:
             if create:
-                new_server = self.\
-                        _create_service_instance(context,
+                new_server = self._create_service_instance(context,
                                                  service_instance_name,
-                                                    share)
+                                                 share)
 
         if server is None and new_server is not None:
              for helper in self._helpers.values():
                 helper.init_helper(new_server)
-        self.share_network_servers[share['share_network_id']] = new_server
+        self.share_networks_servers[share['share_network_id']] = new_server
+        if new_server:
+            new_server['share_network_id'] = share['share_network_id']
         return new_server
 
     def _get_key(self, context):
@@ -424,7 +429,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         service_network = self.neutron_api.get_network(self.service_network_id)
         all_service_subnets = [self.neutron_api.get_subnet(subnet_id)
                                for subnet_id in service_network['subnets']]
-        share_subnet_id = share['network_info']['neutron_subnet_id']
+        share_subnet_id = self.db.share_network_get(context,
+                                share['share_network_id'])['neutron_subnet_id']
         service_subnets = [subnet for subnet in all_service_subnets 
                            if subnet['name'] == share_subnet_id]
         if len(service_subnets) > 1:
@@ -522,7 +528,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             port_fixed_ips.extend(
                 [dict(subnet_id=s) for s in subnets])
             port = self.neutron_api.update_port_fixed_ips(
-                   port['id'], {'port': {'fixed_ips': port_fixed_ips}})
+                   port['id'], {'fixed_ips': port_fixed_ips})
 
         return port
 
@@ -714,7 +720,7 @@ class NASHelperBase(object):
     def __init__(self, execute, config_object, locks):
         self.configuration = config_object
         self._execute = execute
-        self.tenants_locks = locks
+        self.share_networks_locks = locks
 
     def init_helper(self, server):
         pass
@@ -813,6 +819,8 @@ class CIFSHelper(NASHelperBase):
                                os.path.dirname(self.config_path)])
         except Exception as e:
             LOG.debug(e.message)
+            if 'already exists' not in str(e):
+                raise
         try:
             _ssh_exec(server, ['touch', self.config_path])
         except Exception as e:
@@ -822,6 +830,8 @@ class CIFSHelper(NASHelperBase):
             _ssh_exec(server, ['sudo', 'stop', 'smbd'])
         except Exception as e:
             LOG.debug(e.message)
+            if 'unknown instance' not in str(e):
+                raise
         self._write_remote_config(local_config, server)
         _ssh_exec(server, ['sudo', 'smbd', '-s', self.config_path])
         self._restart_service(server)
