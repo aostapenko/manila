@@ -74,7 +74,7 @@ share_opts = [
                default='manila-snapshot-%s',
                help="Volume snapshot name template"),
     cfg.IntOpt('max_time_to_build_instance',
-               default=600,
+               default=300,
                help="Maximum time to wait for creating service instance"),
     cfg.StrOpt('share_mount_path',
                default='/shares',
@@ -118,6 +118,8 @@ def synchronized(f):
     def wrapped_func(self, *args, **kwargs):
         for arg in args:
             share_network_id = getattr(arg, 'share_network_id', None)
+            if isinstance(arg, dict):
+                share_network_id = arg.get('share_network_id', None)
             if share_network_id:
                 break
         else:
@@ -324,11 +326,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                 None)
         service_instance_name = self._get_service_instance_name(share)
         search_opts = {'name': service_instance_name}
-        all_tenants = False
-        if context.is_admin:
-            all_tenants = True
-        servers = self.compute_api.server_list(context, search_opts,
-                                               all_tenants)
+        servers = self.compute_api.server_list(context, search_opts, True)
         new_server = None
 
         if len(servers) > 1:
@@ -344,13 +342,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 new_server = self._create_service_instance(context,
                                                  service_instance_name,
                                                  share)
+        if new_server:
+            new_server['share_network_id'] = share['share_network_id']
 
         if server is None and new_server is not None:
              for helper in self._helpers.values():
                 helper.init_helper(new_server)
         self.share_networks_servers[share['share_network_id']] = new_server
-        if new_server:
-            new_server['share_network_id'] = share['share_network_id']
         return new_server
 
     def _get_key(self, context):
@@ -470,7 +468,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 raise
         return self.neutron_api.create_port(self.service_tenant_id,
                                             self.service_network_id,
-                                            subnet_id=service_subnet['id'])
+                                            subnet_id=service_subnet['id'],
+                                            device_owner='manila')
 
     def _setup_connectivity_with_instances(self):
         vif_driver = interface.OVSInterfaceDriver()
@@ -620,7 +619,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def create_share_from_snapshot(self, context, share, snapshot):
         """Is called to create share from snapshot."""
-        server = self._get_service_instance(context, share)
+        server = self._get_service_instance(self.admin_context, share)
         volume = self._allocate_container(context, share, snapshot)
         volume = self._attach_volume(context, share, server, volume)
         self._mount_device(context, share, server, volume)
@@ -629,7 +628,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return location
 
     def delete_share(self, context, share):
-        server = self._get_service_instance(context, share, create=False)
+        server = self._get_service_instance(self.admin_context,
+                                            share, create=False)
         if server:
             self._get_helper(share).remove_export(server, share['name'])
             self._unmount_device(context, share, server)
@@ -687,14 +687,18 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def allow_access(self, context, share, access):
         """Allow access to the share."""
-        server = self._get_service_instance(context, share)
+        server = self._get_service_instance(self.admin_context,
+                                            share,
+                                            create=False)
         self._get_helper(share).allow_access(server, share['name'],
                                              access['access_type'],
                                              access['access_to'])
 
     def deny_access(self, context, share, access):
         """Allow access to the share."""
-        server = self._get_service_instance(context, share)
+        server = self._get_service_instance(self.admin_context,
+                                            share,
+                                            create=False)
         if server:
             self._get_helper(share).deny_access(server, share['name'],
                                                 access['access_type'],
@@ -819,7 +823,7 @@ class CIFSHelper(NASHelperBase):
                                os.path.dirname(self.config_path)])
         except Exception as e:
             LOG.debug(e.message)
-            if 'already exists' not in str(e):
+            if 'File exists' not in str(e):
                 raise
         try:
             _ssh_exec(server, ['touch', self.config_path])
@@ -830,7 +834,7 @@ class CIFSHelper(NASHelperBase):
             _ssh_exec(server, ['sudo', 'stop', 'smbd'])
         except Exception as e:
             LOG.debug(e.message)
-            if 'unknown instance' not in str(e):
+            if 'Unknown instance' not in str(e):
                 raise
         self._write_remote_config(local_config, server)
         _ssh_exec(server, ['sudo', 'smbd', '-s', self.config_path])
