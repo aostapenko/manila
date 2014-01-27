@@ -427,29 +427,27 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         service_network = self.neutron_api.get_network(self.service_network_id)
         all_service_subnets = [self.neutron_api.get_subnet(subnet_id)
                                for subnet_id in service_network['subnets']]
-        share_subnet_id = self.db.share_network_get(context,
-                                share['share_network_id'])['neutron_subnet_id']
         service_subnets = [subnet for subnet in all_service_subnets 
-                           if subnet['name'] == share_subnet_id]
+                           if subnet['name'] == share['share_network_id']]
         if len(service_subnets) > 1:
             raise exception.ManilaException('Ambigious subnets')
         elif not service_subnets:
             service_subnet = \
                     self.neutron_api.subnet_create(self.service_tenant_id,
                         self.service_network_id,
-                        share_subnet_id,
+                        share['share_network_id'],
                         self._get_cidr_for_subnet(all_service_subnets))
         else:
             service_subnet = service_subnets[0]
 
         service_routers = [router for router in self.neutron_api.router_list() 
-             if router['name'] == share_subnet_id]
+             if router['name'] == share['share_network_id']]
         if len(service_routers) > 1:
             raise exception.ManilaException('Ambigious routers')
         elif not service_routers:
             service_router = self.neutron_api.router_create(
-                                                       self.service_tenant_id,
-                                                       share_subnet_id)
+                                                   self.service_tenant_id,
+                                                   share['share_network_id'])
         else:
             service_router = service_routers[0]
         try:
@@ -459,6 +457,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             LOG.debug(e)
             if 'already has' not in str(e):
                 raise
+        share_subnet_id = self.db.share_network_get(context,
+                                share['share_network_id'])['neutron_subnet_id']
         try:
             self.neutron_api.router_add_interface(service_router['id'],
                                                   share_subnet_id)
@@ -628,6 +628,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return location
 
     def delete_share(self, context, share):
+        if not share['share_network_id']:
+            return
         server = self._get_service_instance(self.admin_context,
                                             share, create=False)
         if server:
@@ -713,7 +715,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.InvalidShare(reason='Wrong share type')
 
     def get_network_allocations_number(self):
-        return 0
+        return 1 
 
     def setup_network(self, network_info):
         pass
