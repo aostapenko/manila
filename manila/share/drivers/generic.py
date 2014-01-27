@@ -20,7 +20,7 @@ Generic Driver for shares.
 """
 
 import ConfigParser
-import netaddr 
+import netaddr
 import os
 import re
 import shutil
@@ -31,8 +31,8 @@ from manila import compute
 from manila import context
 from manila import exception
 from manila.network import interface
-from manila.network import ip_lib 
-from manila.network.neutron import api 
+from manila.network import ip_lib
+from manila.network.neutron import api
 from manila.openstack.common import importutils
 from manila.openstack.common import log as logging
 from manila.share import driver
@@ -346,14 +346,14 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             new_server['share_network_id'] = share['share_network_id']
 
         if server is None and new_server is not None:
-             for helper in self._helpers.values():
+            for helper in self._helpers.values():
                 helper.init_helper(new_server)
         self.share_networks_servers[share['share_network_id']] = new_server
         return new_server
 
     def _get_key(self, context):
         keypair_name = self.configuration.manila_service_keypair_name
-        keypairs = [k for k in self.compute_api.keypair_list(context) 
+        keypairs = [k for k in self.compute_api.keypair_list(context)
                     if k.name == keypair_name]
         if len(keypairs) > 1:
             raise exception.ManilaException('Ambigious keypairs')
@@ -427,7 +427,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         service_network = self.neutron_api.get_network(self.service_network_id)
         all_service_subnets = [self.neutron_api.get_subnet(subnet_id)
                                for subnet_id in service_network['subnets']]
-        service_subnets = [subnet for subnet in all_service_subnets 
+        service_subnets = [subnet for subnet in all_service_subnets
                            if subnet['name'] == share['share_network_id']]
         if len(service_subnets) > 1:
             raise exception.ManilaException('Ambigious subnets')
@@ -440,7 +440,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             service_subnet = service_subnets[0]
 
-        service_routers = [router for router in self.neutron_api.router_list() 
+        service_routers = [router for router in self.neutron_api.router_list()
              if router['name'] == share['share_network_id']]
         if len(service_routers) > 1:
             raise exception.ManilaException('Ambigious routers')
@@ -457,11 +457,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             LOG.debug(e)
             if 'already has' not in str(e):
                 raise
-        share_subnet_id = self.db.share_network_get(context,
-                                share['share_network_id'])['neutron_subnet_id']
+        share_network = self.db.share_network_get(context,
+                                                  share['share_network_id'])
         try:
-            self.neutron_api.router_add_interface(service_router['id'],
-                                                  share_subnet_id)
+            self.neutron_api.router_add_interface(service_router['id'], None,
+                                 share_network['network_allocations'][0]['id'])
         except Exception as e:
             LOG.debug(e)
             if 'already has' not in str(e):
@@ -475,9 +475,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         vif_driver = interface.OVSInterfaceDriver()
         port = self._setup_service_port()
         interface_name = vif_driver.get_device_name(port)
-        vif_driver.plug(port['id'],
-                        interface_name,
-                        port['mac_address'])
+        vif_driver.plug(port['id'], interface_name, port['mac_address'])
         ip_cidrs = []
         for fixed_ip in port['fixed_ips']:
             subnet = self.neutron_api.get_subnet(fixed_ip['subnet_id'])
@@ -494,7 +492,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return interface_name
 
     def _setup_service_port(self):
-        ports = [port for port in self.neutron_api.\
+        ports = [port for port in self.neutron_api.
                  list_ports(device_id='manila-share')]
         if len(ports) > 1:
             raise exception.ManilaException('Error. Ambigious service ports')
@@ -715,10 +713,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.InvalidShare(reason='Wrong share type')
 
     def get_network_allocations_number(self):
-        return 1 
+        return 1
 
     def setup_network(self, network_info):
         pass
+
 
 class NASHelperBase(object):
     """Interface to work with share."""
@@ -802,7 +801,7 @@ class CIFSHelper(NASHelperBase):
         self.local_configs = {}
 
     def _create_local_config(self, tenant_id):
-        path, ext = os.path.splitext(self.smb_template_config) 
+        path, ext = os.path.splitext(self.smb_template_config)
         local_config = '%s-%s%s' % (path, tenant_id, ext)
         self.local_configs[tenant_id] = local_config
         shutil.copy(self.smb_template_config, local_config)
@@ -816,7 +815,7 @@ class CIFSHelper(NASHelperBase):
 
     def init_helper(self, server):
         self._recreate_template_config()
-        local_config = self._create_local_config(server['tenant_id']) 
+        local_config = self._create_local_config(server['tenant_id'])
         try:
             _ssh_exec(server, ['sudo', 'mkdir',
                                os.path.dirname(self.config_path)])
