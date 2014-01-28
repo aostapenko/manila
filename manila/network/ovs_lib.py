@@ -21,9 +21,9 @@
 import re
 
 from manila.network import ip_lib
-from manila import utils
 from manila.openstack.common import jsonutils
 from manila.openstack.common import log as logging
+from manila import utils
 
 LOG = logging.getLogger(__name__)
 

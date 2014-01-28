@@ -1,6 +1,6 @@
 # vim: tabstop=4 shiftwidth=4 softtabstop=4
 
-# Copyright 2012 OpenStack Foundation
+# Copyright 2014 Mirantis Inc.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -38,12 +38,11 @@ OPTS = [
                 help=_('Uses veth for an interface or not')),
     cfg.IntOpt('network_device_mtu',
                help=_('MTU setting for device.')),
-    cfg.StrOpt('meta_flavor_driver_mappings',
-               help=_('Mapping between flavor and LinuxInterfaceDriver')),
 ]
 
 CONF = cfg.CONF
 CONF.register_opts(OPTS)
+
 
 class LinuxInterfaceDriver(object):
     __metaclass__ = abc.ABCMeta
@@ -53,7 +52,7 @@ class LinuxInterfaceDriver(object):
     DEV_NAME_PREFIX = 'tap'
 
     def __init__(self):
-        self.conf = CONF 
+        self.conf = CONF
 
     def init_l3(self, device_name, ip_cidrs, namespace=None):
         """Set the L3 settings for the interface using data from the port.
@@ -201,73 +200,12 @@ class OVSInterfaceDriver(LinuxInterfaceDriver):
                       device_name)
 
 
-class IVSInterfaceDriver(LinuxInterfaceDriver):
-    """Driver for creating an internal interface on an IVS bridge."""
-
-    DEV_NAME_PREFIX = 'tap'
-
-    def __init__(self):
-        super(IVSInterfaceDriver, self).__init__()
-        self.DEV_NAME_PREFIX = 'ns-'
-
-    def _get_tap_name(self, dev_name, prefix=None):
-        dev_name = dev_name.replace(prefix or self.DEV_NAME_PREFIX, 'tap')
-        return dev_name
-
-    def _ivs_add_port(self, device_name, port_id, mac_address):
-        cmd = ['ivs-ctl', 'add-port', device_name]
-        utils.execute(cmd)
-
-    def plug(self, network_id, port_id, device_name, mac_address,
-             bridge=None, namespace=None, prefix=None):
-        """Plug in the interface."""
-        if not ip_lib.device_exists(device_name,
-                                    namespace=namespace):
-
-            ip = ip_lib.IPWrapper()
-            tap_name = self._get_tap_name(device_name, prefix)
-
-            root_dev, ns_dev = ip.add_veth(tap_name, device_name)
-
-            self._ivs_add_port(tap_name, port_id, mac_address)
-
-            ns_dev = ip.device(device_name)
-            ns_dev.link.set_address(mac_address)
-
-            if self.conf.network_device_mtu:
-                ns_dev.link.set_mtu(self.conf.network_device_mtu)
-                root_dev.link.set_mtu(self.conf.network_device_mtu)
-
-            if namespace:
-                namespace_obj = ip.ensure_namespace(namespace)
-                namespace_obj.add_device_to_namespace(ns_dev)
-
-            ns_dev.link.set_up()
-            root_dev.link.set_up()
-        else:
-            LOG.warn(_("Device %s already exists"), device_name)
-
-    def unplug(self, device_name, bridge=None, namespace=None, prefix=None):
-        """Unplug the interface."""
-        tap_name = self._get_tap_name(device_name, prefix)
-        try:
-            cmd = ['ivs-ctl', 'del-port', tap_name]
-            utils.execute(cmd)
-            device = ip_lib.IPDevice(device_name,
-                                     namespace)
-            device.link.delete()
-            LOG.debug(_("Unplugged interface '%s'"), device_name)
-        except RuntimeError:
-            LOG.error(_("Failed unplugging interface '%s'"),
-                      device_name)
-
-
 class BridgeInterfaceDriver(LinuxInterfaceDriver):
     """Driver for creating bridge interfaces."""
 
     DEV_NAME_PREFIX = 'ns-'
 
-    def plug(self, network_id, port_id, device_name, mac_address,
+    def plug(self, port_id, device_name, mac_address,
              bridge=None, namespace=None, prefix=None):
         """Plugin the interface."""
         if not ip_lib.device_exists(device_name,

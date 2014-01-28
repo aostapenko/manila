@@ -17,7 +17,6 @@
 import netaddr
 
 from manila import utils
-from manila import exception
 
 
 LOOPBACK_DEVNAME = 'lo'

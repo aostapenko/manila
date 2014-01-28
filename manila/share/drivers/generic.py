@@ -101,6 +101,9 @@ share_opts = [
                help="Name of manila serivce network"),
     cfg.StrOpt('service_tenant_id',
                help="Tenant id of service tenant"),
+    cfg.StrOpt('interface_driver',
+               default='nova.network.interface.OVSInterfaceDriver',
+               help="Core neutron plugin"),
     cfg.ListOpt('share_lvm_helpers',
                 default=[
                     'CIFS=manila.share.drivers.generic.CIFSHelper',
@@ -472,7 +475,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                             device_owner='manila')
 
     def _setup_connectivity_with_instances(self):
-        vif_driver = interface.OVSInterfaceDriver()
+        vif_driver = getattr(interface, self.configuration.interface_driver)()
         port = self._setup_service_port()
         interface_name = vif_driver.get_device_name(port)
         vif_driver.plug(port['id'], interface_name, port['mac_address'])
