@@ -97,14 +97,14 @@ share_opts = [
                default='manila_service_network',
                help="Name of manila serivce network"),
     cfg.StrOpt('service_network_cidr',
-               default='11.11.0.0/24',
+               default='10.254.0.0/16',
                help="Name of manila serivce network"),
     cfg.StrOpt('service_tenant_id',
                help="Tenant id of service tenant"),
     cfg.StrOpt('interface_driver',
                default='nova.network.interface.OVSInterfaceDriver',
                help="Core neutron plugin"),
-    cfg.ListOpt('share_lvm_helpers',
+    cfg.ListOpt('share_helpers',
                 default=[
                     'CIFS=manila.share.drivers.generic.CIFSHelper',
                     'NFS=manila.share.drivers.generic.NFSHelper',
@@ -190,7 +190,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def _setup_helpers(self):
         """Initializes protocol-specific NAS drivers."""
         self._helpers = {}
-        for helper_str in self.configuration.share_lvm_helpers:
+        for helper_str in self.configuration.share_helpers:
             share_proto, _, import_str = helper_str.partition('=')
             helper = importutils.import_class(import_str)
             self._helpers[share_proto.upper()] = helper(self._execute,
