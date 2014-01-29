@@ -242,16 +242,19 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def _attach_volume(self, context, share, server, volume):
         if volume['status'] == 'in-use':
             attached_volumes = [vol.id for vol in
-                self.compute_api.instance_volumes_list(context, server['id'])]
+                self.compute_api.instance_volumes_list(self.admin_context,
+                                                       server['id'])]
             if volume['id'] in attached_volumes:
                 return volume
             else:
                 raise exception.ManilaException('Volume is already attached '
                                                 'to another instance')
-        device_path = self._get_device_path(context, server)
+        device_path = self._get_device_path(self.admin_context, server)
         try:
-            self.compute_api.instance_volume_attach(context, server['id'],
-                                                    volume['id'], device_path)
+            self.compute_api.instance_volume_attach(self.admin_context,
+                                                    server['id'],
+                                                    volume['id'],
+                                                    device_path)
         except Exception as e:
             LOG.debug(e.message)
             raise
