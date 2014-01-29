@@ -20,11 +20,11 @@ import abc
 import netaddr
 from oslo.config import cfg
 
+from manila import exception
 from manila.network import ip_lib
 from manila.network import ovs_lib
-from manila import utils
-from manila import exception
 from manila.openstack.common import log as logging
+from manila import utils
 
 
 LOG = logging.getLogger(__name__)
