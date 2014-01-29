@@ -102,7 +102,7 @@ share_opts = [
     cfg.StrOpt('service_tenant_id',
                help="Tenant id of service tenant"),
     cfg.StrOpt('interface_driver',
-               default='nova.network.interface.OVSInterfaceDriver',
+               default='OVSInterfaceDriver',
                help="Core neutron plugin"),
     cfg.ListOpt('share_helpers',
                 default=[
