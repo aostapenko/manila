@@ -24,8 +24,8 @@ import netaddr
 import os
 import re
 import shutil
-import time
 import threading
+import time
 
 from manila import compute
 from manila import context
@@ -36,8 +36,8 @@ from manila.network.neutron import api
 from manila.openstack.common import importutils
 from manila.openstack.common import log as logging
 from manila.share import driver
-from manila import volume
 from manila import utils
+from manila import volume
 
 from oslo.config import cfg
 
