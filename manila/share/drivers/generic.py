@@ -65,10 +65,10 @@ share_opts = [
                help="Name of keypair that will be created and used "
                "for service instance"),
     cfg.StrOpt('path_to_public_key',
-               default='/home/stack/id_rsa.pub',
+               default='/home/stack/.ssh/id_rsa.pub',
                help="Path to hosts public key"),
     cfg.StrOpt('path_to_private_key',
-               default='/home/stack/id_rsa',
+               default='/home/stack/.ssh/id_rsa',
                help="Path to hosts private key"),
     cfg.StrOpt('volume_snapshot_name_template',
                default='manila-snapshot-%s',
@@ -293,11 +293,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     @synchronized
     def _detach_volume(self, context, share, server):
         attached_volumes = [vol.id for vol in
-                self.compute_api.instance_volumes_list(context,
+                self.compute_api.instance_volumes_list(self.admin_context,
                                                        server['id'])]
         volume = self._get_volume(context, share['id'])
         if volume and volume['id'] in attached_volumes:
-            self.compute_api.instance_volume_detach(context,
+            self.compute_api.instance_volume_detach(self.admin_context,
                                                     server['id'],
                                                     volume['id'])
             t = time.time()
@@ -389,7 +389,12 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         key_name = self._get_key(context)
 
         port = self._setup_network_for_instance(context, share)
-        self._setup_connectivity_with_instances()
+        try:
+            self._setup_connectivity_with_instances()
+        except Exception as e:
+            LOG.debug(e)
+            self.neutron_api.delete_port(port['id'])
+            raise
         service_instance = self.compute_api.server_create(context,
                                 instance_name,
                                 images[0],
@@ -699,6 +704,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def deny_access(self, context, share, access):
         """Allow access to the share."""
+        if not share['share_network_id']:
+            return
         server = self._get_service_instance(self.admin_context,
                                             share,
                                             create=False)
