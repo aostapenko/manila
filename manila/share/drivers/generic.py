@@ -143,7 +143,12 @@ def _ssh_exec(server, command):
 
 
 def _get_server_ip(server):
-    return server['networks'].values()[0][0]
+    ip = None
+    try:
+        ip = server['networks'].values()[0][0]
+    except Exception as e:
+        LOG.debug(e)
+    return ip
 
 
 class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
@@ -340,14 +345,29 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         elif len(servers) == 1:
             new_server = servers[0]
             if new_server['status'] != 'ACTIVE':
+                old_server_ip = _get_server_ip(new_server)
                 self.compute_api.server_delete(context, new_server['id'])
+                t = time.time()
+                while time.time() - t < self.configuration.\
+                                                 max_time_to_build_instance:
+                    try:
+                        new_server = self.compute_api.server_get(context,
+                                                          new_server['id'])
+                    except Exception as e:
+                        if 'could not be found' not in e.message:
+                            raise
+                        break
+                    time.sleep(1)
+                else:
+                    raise exception.ManilaException('Server deletion error')
+                new_server = None
                 servers = []
 
         if not servers:
             if create:
                 new_server = self._create_service_instance(context,
                                                  service_instance_name,
-                                                 share)
+                                                 share, old_server_ip)
         if new_server:
             new_server['share_network_id'] = share['share_network_id']
 
@@ -381,7 +401,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                           public_key)
         return keypair.name
 
-    def _create_service_instance(self, context, instance_name, share):
+    def _create_service_instance(self, context, instance_name, share,
+                                 old_server_ip):
         images = [image.id for image in self.compute_api.image_list(context)
                 if image.name == self.configuration.service_image_name]
         if not images:
@@ -391,7 +412,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
         key_name = self._get_key(context)
 
-        port = self._setup_network_for_instance(context, share)
+        port = self._setup_network_for_instance(context, share, old_server_ip)
         try:
             self._setup_connectivity_with_instances()
         except Exception as e:
@@ -434,7 +455,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             raise exception.ManilaException('Server waiting timeout')
 
-    def _setup_network_for_instance(self, context, share):
+    def _setup_network_for_instance(self, context, share, old_server_ip):
         service_network = self.neutron_api.get_network(self.service_network_id)
         all_service_subnets = [self.neutron_api.get_subnet(subnet_id)
                                for subnet_id in service_network['subnets']]
@@ -480,6 +501,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return self.neutron_api.create_port(self.service_tenant_id,
                                             self.service_network_id,
                                             subnet_id=service_subnet['id'],
+                                            fixed_ip=old_server_ip,
                                             device_owner='manila')
 
     def _setup_connectivity_with_instances(self):
@@ -597,7 +619,6 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def get_share_stats(self, refresh=False):
         """Get share status.
-
         If 'refresh' is True, run update the stats first."""
         if refresh:
             self._update_share_status()
@@ -832,13 +853,17 @@ class CIFSHelper(NASHelperBase):
         try:
             _ssh_exec(server, ['sudo', 'mkdir',
                                os.path.dirname(self.config_path)])
+        except Exception as e:
+            LOG.debug(e.message)
+            if 'File exists' not in str(e):
+                raise
+        try:
             _ssh_exec(server, ['sudo', 'chown',
                                self.configuration.service_instance_user,
                                os.path.dirname(self.config_path)])
         except Exception as e:
             LOG.debug(e.message)
-            if 'File exists' not in str(e):
-                raise
+            raise
         try:
             _ssh_exec(server, ['touch', self.config_path])
         except Exception as e:
