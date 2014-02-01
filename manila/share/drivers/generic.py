@@ -339,7 +339,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         search_opts = {'name': service_instance_name}
         servers = self.compute_api.server_list(context, search_opts, True)
         new_server = None
-
+        old_server_ip = None
         if len(servers) > 1:
             raise exception.ManilaException('Ambigious service instances')
         elif len(servers) == 1:
