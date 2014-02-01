@@ -117,7 +117,7 @@ CONF.register_opts(share_opts)
 
 
 def synchronized(f):
-    """Decorates function with unique locks for each tenant."""
+    """Decorates function with unique locks for each share network."""
     def wrapped_func(self, *args, **kwargs):
         for arg in args:
             share_network_id = getattr(arg, 'share_network_id', None)
@@ -134,21 +134,12 @@ def synchronized(f):
 
 
 def _ssh_exec(server, command):
-    ip = _get_server_ip(server)
+    ip = server['ip']
     user = CONF.service_instance_user
     cmd = ['ssh', '@'.join([user, ip]),
            '-o StrictHostKeyChecking=no', '-i', CONF.path_to_private_key]
     cmd.extend(command)
     return utils.execute(*cmd)
-
-
-def _get_server_ip(server):
-    ip = None
-    try:
-        ip = server['networks'].values()[0][0]
-    except Exception as e:
-        LOG.debug(e)
-    return ip
 
 
 class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
@@ -331,6 +322,14 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return self.configuration.service_instance_name_template % \
                     share['share_network_id']
 
+    def _get_server_ip(self, server):
+        ip = None
+        try:
+            ip = server['networks'].values()[0][0]
+        except Exception as e:
+            LOG.debug(e)
+        return ip
+
     @synchronized
     def _get_service_instance(self, context, share, create=True):
         server = self.share_networks_servers.get(share['share_network_id'],
@@ -345,7 +344,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         elif len(servers) == 1:
             new_server = servers[0]
             if new_server['status'] != 'ACTIVE':
-                old_server_ip = _get_server_ip(new_server)
+                old_server_ip = self._get_server_ip(new_server)
                 self.compute_api.server_delete(context, new_server['id'])
                 t = time.time()
                 while time.time() - t < self.configuration.\
@@ -370,6 +369,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                  share, old_server_ip)
         if new_server:
             new_server['share_network_id'] = share['share_network_id']
+            new_server['ip'] = self._get_server_ip(new_server)
 
         if server is None and new_server is not None:
             for helper in self._helpers.values():
@@ -790,7 +790,7 @@ class NFSHelper(NASHelperBase):
 
     def create_export(self, server, share_name, recreate=False):
         """Create new export, delete old one if exists."""
-        return ':'.join([_get_server_ip(server),
+        return ':'.join([server['ip'],
             os.path.join(self.configuration.share_mount_path, share_name)])
 
     def remove_export(self, server, share_name):
@@ -905,7 +905,7 @@ class CIFSHelper(NASHelperBase):
         self._update_config(parser, config)
         self._write_remote_config(config, server)
         self._restart_service(server)
-        return '//%s/%s' % (_get_server_ip(server), share_name)
+        return '//%s/%s' % (server['ip'], share_name)
 
     def remove_export(self, server, share_name):
         """Remove export."""
