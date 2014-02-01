@@ -167,7 +167,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self.volume_api = volume.API()
         self.neutron_api = api.API()
         self.service_network_id = self._get_service_network()
-        self._setup_connectivity_with_instances()
+        self._setup_connectivity_with_service_instances()
         self._setup_helpers()
 
     def _get_service_network(self):
@@ -414,7 +414,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
         port = self._setup_network_for_instance(context, share, old_server_ip)
         try:
-            self._setup_connectivity_with_instances()
+            self._setup_connectivity_with_service_instances()
         except Exception as e:
             LOG.debug(e)
             self.neutron_api.delete_port(port['id'])
@@ -442,6 +442,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             raise exception.ManilaException('Server waiting timeout')
 
+        service_instance['ip'] = self._get_server_ip(service_instance)
         t = time.time()
         while time.time() - t < self.configuration.max_time_to_build_instance:
             LOG.debug('Checking server availability')
@@ -498,13 +499,47 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             LOG.debug(e)
             if 'already has' not in str(e):
                 raise
-        return self.neutron_api.create_port(self.service_tenant_id,
+
+        private_subnet = \
+                self.neutron_api.get_subnet(share_network['neutron_subnet_id'])
+
+        self.neutron_api.router_update_routes(service_router['id'], {
+                            'routes': [{
+                                        'destination': '0.0.0.0/0',
+                                        'nexthop': private_subnet['gateway_ip']
+                                        }]})
+        port_for_server = self.neutron_api.create_port(self.service_tenant_id,
                                             self.service_network_id,
                                             subnet_id=service_subnet['id'],
                                             fixed_ip=old_server_ip,
                                             device_owner='manila')
+        self._ensure_routes(share_network,
+                            port_for_server['fixed_ips'][0]['ip_address'])
+        return port_for_server
 
-    def _setup_connectivity_with_instances(self):
+    def _ensure_routes(self, share_network, server_ip):
+        private_subnet = self.neutron_api.\
+                get_subnet(share_network['neutron_subnet_id'])
+        private_subnet_gateway_port = [p for p in self.neutron_api.list_ports(
+             network_id=share_network['neutron_net_id'])
+             if p['fixed_ips'][0]['subnet_id']==private_subnet['id'] and
+             p['fixed_ips'][0]['ip_address']==private_subnet['gateway_ip']]
+        if not private_subnet_gateway_port:
+            raise exception.ManilaException('Subnet gateway is not attached to'
+                                            'the router')
+        private_subnet_gateway_router = self.neutron_api.show_router(
+                                  private_subnet_gateway_port[0]['device_id']
+                                  )
+        routes = private_subnet_gateway_router['routes']
+        router_ip = share_network['network_allocations'][0]['ip_address']
+        new_routes = {'destination': server_ip + '/32',
+                       'nexthop': router_ip }
+        if new_routes not in routes:
+            routes.append(new_routes)
+            self.neutron_api.router_update_routes(
+                private_subnet_gateway_router['id'], {'routes': routes})
+
+    def _setup_connectivity_with_service_instances(self):
         vif_driver = getattr(interface, self.configuration.interface_driver)()
         port = self._setup_service_port()
         interface_name = vif_driver.get_device_name(port)
