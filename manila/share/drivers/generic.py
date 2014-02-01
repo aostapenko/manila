@@ -522,8 +522,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 get_subnet(share_network['neutron_subnet_id'])
         private_subnet_gateway_port = [p for p in self.neutron_api.list_ports(
              network_id=share_network['neutron_net_id'])
-             if p['fixed_ips'][0]['subnet_id']==private_subnet['id'] and
-             p['fixed_ips'][0]['ip_address']==private_subnet['gateway_ip']]
+             if p['fixed_ips'][0]['subnet_id'] == private_subnet['id'] and
+             p['fixed_ips'][0]['ip_address'] == private_subnet['gateway_ip']]
         if not private_subnet_gateway_port:
             raise exception.ManilaException('Subnet gateway is not attached to'
                                             'the router')
@@ -533,7 +533,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         routes = private_subnet_gateway_router['routes']
         router_ip = share_network['network_allocations'][0]['ip_address']
         new_routes = {'destination': server_ip + '/32',
-                       'nexthop': router_ip }
+                       'nexthop': router_ip}
         if new_routes not in routes:
             routes.append(new_routes)
             self.neutron_api.router_update_routes(
