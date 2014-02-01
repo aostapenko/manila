@@ -225,8 +225,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         try:
             _ssh_exec(server, command)
         except Exception as e:
-            LOG.debug(e.message)
-            if 'already mounted' not in e.message:
+            LOG.debug(e)
+            if 'already mounted' not in str(e):
                 raise
         command = ['sudo', 'chmod', '777', mount_path]
         _ssh_exec(server, command)
@@ -261,7 +261,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                     volume['id'],
                                                     device_path)
         except Exception as e:
-            LOG.debug(e.message)
+            LOG.debug(e)
             raise
 
         t = time.time()
@@ -334,7 +334,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     @synchronized
     def _get_service_instance(self, context, share, create=True):
         server = self.share_networks_servers.get(share['share_network_id'],
-                                                None)
+                                                 None)
         service_instance_name = self._get_service_instance_name(share)
         search_opts = {'name': service_instance_name}
         servers = self.compute_api.server_list(context, search_opts, True)
@@ -354,7 +354,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                         new_server = self.compute_api.server_get(context,
                                                           new_server['id'])
                     except Exception as e:
-                        if 'could not be found' not in e.message:
+                        if 'could not be found' not in str(e):
                             raise
                         break
                     time.sleep(1)
@@ -438,7 +438,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 service_instance = self.compute_api.server_get(context,
                                     service_instance['id'])
             except Exception as e:
-                LOG.debug(e.message)
+                LOG.debug(e)
         else:
             raise exception.ManilaException('Server waiting timeout')
 
@@ -702,7 +702,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 snapshot = self.volume_api.get_snapshot(context,
                                                         volume_snapshot['id'])
             except Exception as e:
-                if 'could not be found' not in e.message:
+                if 'could not be found' not in str(e):
                     raise
                 break
             time.sleep(1)
@@ -854,7 +854,7 @@ class CIFSHelper(NASHelperBase):
             _ssh_exec(server, ['sudo', 'mkdir',
                                os.path.dirname(self.config_path)])
         except Exception as e:
-            LOG.debug(e.message)
+            LOG.debug(e)
             if 'File exists' not in str(e):
                 raise
         try:
@@ -862,17 +862,17 @@ class CIFSHelper(NASHelperBase):
                                self.configuration.service_instance_user,
                                os.path.dirname(self.config_path)])
         except Exception as e:
-            LOG.debug(e.message)
+            LOG.debug(e)
             raise
         try:
             _ssh_exec(server, ['touch', self.config_path])
         except Exception as e:
-            LOG.debug(e.message)
+            LOG.debug(e)
             raise
         try:
             _ssh_exec(server, ['sudo', 'stop', 'smbd'])
         except Exception as e:
-            LOG.debug(e.message)
+            LOG.debug(e)
             if 'Unknown instance' not in str(e):
                 raise
         self._write_remote_config(local_config, server)
