@@ -358,7 +358,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                         break
                     time.sleep(1)
                 else:
-                    raise exception.ManilaException('Server deletion error')
+                    raise exception.ManilaException('Server deletion timeout')
                 new_server = None
                 servers = []
 
