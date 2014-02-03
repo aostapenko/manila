@@ -99,8 +99,6 @@ share_opts = [
     cfg.StrOpt('service_network_cidr',
                default='10.254.0.0/16',
                help="Name of manila serivce network"),
-    cfg.StrOpt('service_tenant_id',
-               help="Tenant id of service tenant"),
     cfg.StrOpt('interface_driver',
                default='OVSInterfaceDriver',
                help="Core neutron plugin"),
@@ -152,7 +150,6 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self.db = db
         self.share_networks_locks = {}
         self.share_networks_servers = {}
-        self.service_tenant_id = self.configuration.service_tenant_id
         self.configuration.append_config_values(share_opts)
         self._helpers = None
 
@@ -166,6 +163,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self.compute_api = compute.API()
         self.volume_api = volume.API()
         self.neutron_api = api.API()
+        self.service_tenant_id = self.neutron_api.admin_tenant_id
         self.service_network_id = self._get_service_network()
         self._setup_connectivity_with_service_instances()
         self._setup_helpers()
