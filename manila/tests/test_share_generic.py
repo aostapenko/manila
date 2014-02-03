@@ -87,9 +87,12 @@ class GenericShareDriverTestCase(test.TestCase):
         self._helper_nfs = mock.Mock()
         self.fake_conf = Configuration(None)
         self._db = mock.Mock()
-        self.stubs.Set(network.neutron.api, 'API', fake_network.API)
-        self.stubs.Set(volume, 'API', fake_volume.API)
-        self.stubs.Set(compute, 'API', fake_compute.API)
+        self.stubs.Set(network.neutron.api, 'API',
+                       mock.Mock(return_value=fake_network.API()))
+        self.stubs.Set(volume, 'API',
+                       mock.Mock(return_value=fake_volume.API()))
+        self.stubs.Set(compute, 'API',
+                       mock.Mock(return_value=fake_compute.API()))
         self._driver = generic.GenericShareDriver(self._db,
                                                   execute=self._execute,
                                                   configuration=self.fake_conf)
@@ -111,12 +114,19 @@ class GenericShareDriverTestCase(test.TestCase):
         self.stubs.Set(self._driver,
                        '_setup_connectivity_with_service_instances',
                         mock.Mock())
+        self.stubs.Set(self._driver,
+                       '_get_service_network',
+                        mock.Mock(return_value='fake network'))
         CONF.set_default('share_helpers', ['NFS=fakenfs'])
-        generic.importutils = mock.Mock()
-        generic.importutils.import_class.return_value = self._helper_nfs
+        self.stubs.Set(generic, 'importutils',
+                       mock.Mock(return_value=self._helper_nfs))
         self._driver.do_setup(self._context)
+        network.neutron.api.API.assert_called_once()
+        volume.API.assert_called_once()
+        compute.API.assert_called_once()
         self._driver._setup_connectivity_with_service_instances.\
-                assert_called_once()
+                                                        assert_called_once()
         generic.importutils.import_class.assert_has_calls([
             mock.call('fakenfs')
         ])
+        self.assertEqual(self._driver.service_network_id, 'fake network')
