@@ -28,6 +28,8 @@ LOG = logging.getLogger(__name__)
 
 class API(object):
     """Fake Network API"""
+    admin_tenant_id = 'fake admin tenant id'
+
     network = {
         "status": "ACTIVE",
         "subnets": ["fake_subnet_id"],
@@ -115,4 +117,10 @@ class API(object):
         """Get specific network for client."""
         network = self.network.copy()
         network['id'] = network_uuid
+        return network
+
+    def network_create(self, tenant_id, name):
+        network = self.network.copy()
+        network['tenant_id'] = tenant_id
+        network['name'] = name
         return network
