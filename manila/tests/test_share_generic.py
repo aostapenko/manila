@@ -20,6 +20,8 @@ import os
 
 from manila import context
 
+from manila import compute
+from manila import network
 from manila.share.configuration import Configuration
 from manila.share.drivers import generic
 from manila import test
@@ -28,10 +30,9 @@ from manila.tests import fake_compute
 from manila.tests import fake_network
 from manila.tests import fake_utils
 from manila.tests import fake_volume
-from oslo.config import cfg
-from manila import network
-from manila import compute
 from manila import volume
+
+from oslo.config import cfg
 
 CONF = cfg.CONF
 
