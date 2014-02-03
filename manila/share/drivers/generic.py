@@ -32,7 +32,7 @@ from manila import context
 from manila import exception
 from manila.network.linux import interface
 from manila.network.linux import ip_lib
-from manila.network.neutron import api
+from manila.network.neutron import api as neutron
 from manila.openstack.common import importutils
 from manila.openstack.common import log as logging
 from manila.share import driver
@@ -90,7 +90,7 @@ share_opts = [
                default=100,
                help="ID of flavor, that will be used for service instance "
                "creation"),
-    cfg.StrOpt('smb_config_path',
+    cfg.StrOpt('service_instance_smb_config_path',
                default='$share_mount_path/smb.conf',
                help="Path to smb config in service instance"),
     cfg.StrOpt('service_network_name',
@@ -162,7 +162,17 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         super(GenericShareDriver, self).do_setup(context)
         self.compute_api = compute.API()
         self.volume_api = volume.API()
-        self.neutron_api = api.API()
+        attempts = 5
+        while attempts:
+            try:
+                self.neutron_api = neutron.API()
+                break
+            except Exception as e:
+                LOG(e.args[0])
+                attempts -= 1
+                time.sleep(3)
+        else:
+            raise exception.ManilaException('NeutronClient is not ready')
         self.service_tenant_id = self.neutron_api.admin_tenant_id
         self.service_network_id = self._get_service_network()
         self._setup_connectivity_with_service_instances()
@@ -862,7 +872,7 @@ class CIFSHelper(NASHelperBase):
     def __init__(self, *args):
         """Store executor and configuration path."""
         super(CIFSHelper, self).__init__(*args)
-        self.config_path = self.configuration.smb_config_path
+        self.config_path = self.configuration.service_instance_smb_config_path
         self.smb_template_config = self.configuration.smb_template_config_path
         self.test_config = "%s_" % (self.smb_template_config,)
         self.local_configs = {}
