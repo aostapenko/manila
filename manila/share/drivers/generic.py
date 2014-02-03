@@ -162,18 +162,14 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         super(GenericShareDriver, self).do_setup(context)
         self.compute_api = compute.API()
         self.volume_api = volume.API()
-        attempts = 5
-        while attempts:
+        self.neutron_api = neutron.API()
+        while True:
             try:
-                self.neutron_api = neutron.API()
+                self.service_tenant_id = self.neutron_api.admin_tenant_id
                 break
             except Exception as e:
-                LOG(e.args[0])
-                attempts -= 1
+                LOG.debug(e)
                 time.sleep(3)
-        else:
-            raise exception.ManilaException('NeutronClient is not ready')
-        self.service_tenant_id = self.neutron_api.admin_tenant_id
         self.service_network_id = self._get_service_network()
         self._setup_connectivity_with_service_instances()
         self._setup_helpers()
