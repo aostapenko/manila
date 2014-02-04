@@ -21,7 +21,7 @@ import os
 from manila import context
 
 from manila import compute
-from manila import network
+from manila.network.neutron import api as neutron
 from manila.share.configuration import Configuration
 from manila.share.drivers import generic
 from manila import test
@@ -87,7 +87,7 @@ class GenericShareDriverTestCase(test.TestCase):
         self._helper_nfs = mock.Mock()
         self.fake_conf = Configuration(None)
         self._db = mock.Mock()
-        self.stubs.Set(network.neutron.api, 'API',
+        self.stubs.Set(neutron, 'API',
                        mock.Mock(return_value=fake_network.API()))
         self.stubs.Set(volume, 'API',
                        mock.Mock(return_value=fake_volume.API()))
@@ -121,7 +121,7 @@ class GenericShareDriverTestCase(test.TestCase):
         self.stubs.Set(generic, 'importutils',
                        mock.Mock(return_value=self._helper_nfs))
         self._driver.do_setup(self._context)
-        network.neutron.api.API.assert_called_once()
+        neutron.API.assert_called_once()
         volume.API.assert_called_once()
         compute.API.assert_called_once()
         self._driver._setup_connectivity_with_service_instances.\
