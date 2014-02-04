@@ -136,6 +136,9 @@ def synchronized(f):
 
 
 def _ssh_exec(server, command):
+    if not server['ssh']._transport.active:
+        server['ssh'].close()
+        server['ssh'] = server['ssh_pool'].create()
     return utils.ssh_execute(server['ssh'], ' '.join(command))
 
 
@@ -372,27 +375,29 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                  service_instance_name,
                                                  share, old_server_ip)
 
-        if server is None and new_server is not None:
+        if not server and new_server:
             new_server['share_network_id'] = share['share_network_id']
             new_server['ip'] = self._get_server_ip(new_server)
-            new_server['ssh'] = self._get_ssh_connection(new_server)
+            new_server['ssh_pool'] = self._get_ssh_pool(new_server)
+            new_server['ssh'] = new_server['ssh_pool'].create()
             for helper in self._helpers.values():
                 helper.init_helper(new_server)
         elif server and new_server:
             new_server['share_network_id'] = server['share_network_id']
             new_server['ip'] = server['ip']
+            new_server['ssh_pool'] = server['ssh_pool']
             new_server['ssh'] = server['ssh']
 
         self.share_networks_servers[share['share_network_id']] = new_server
         return new_server
 
-    def _get_ssh_connection(self, server):
+    def _get_ssh_pool(self, server):
         ssh_pool = utils.SSHPool(server['ip'], 22, None,
                          self.configuration.service_instance_user,
                          password=self.configuration.service_instance_password,
                          privatekey=self.configuration.path_to_private_key,
                          max_size=1)
-        return ssh_pool.create()
+        return ssh_pool
 
     def _get_key(self, context):
         if not os.path.exists(self.configuration.path_to_public_key) or \
