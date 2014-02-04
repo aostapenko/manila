@@ -23,6 +23,7 @@ import ConfigParser
 import netaddr
 import os
 import re
+import socket
 import shutil
 import threading
 import time
@@ -57,6 +58,9 @@ share_opts = [
     cfg.StrOpt('service_instance_user',
                default='ubuntu',
                help="User in service instance"),
+    cfg.StrOpt('service_instance_password',
+               default='ubuntu',
+               help="Passwork to service_instance_user"),
     cfg.StrOpt('volume_name_template',
                default='manila-share-%s',
                help="Volume name template"),
@@ -132,12 +136,7 @@ def synchronized(f):
 
 
 def _ssh_exec(server, command):
-    ip = server['ip']
-    user = CONF.service_instance_user
-    cmd = ['ssh', '@'.join([user, ip]),
-           '-o StrictHostKeyChecking=no', '-i', CONF.path_to_private_key]
-    cmd.extend(command)
-    return utils.execute(*cmd)
+    return utils.ssh_execute(server['ssh'], ' '.join(command))
 
 
 class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
@@ -364,6 +363,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 else:
                     raise exception.ManilaException('Server deletion timeout')
                 new_server = None
+                server = None
                 servers = []
 
         if not servers:
@@ -371,17 +371,33 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 new_server = self._create_service_instance(context,
                                                  service_instance_name,
                                                  share, old_server_ip)
-        if new_server:
-            new_server['share_network_id'] = share['share_network_id']
-            new_server['ip'] = self._get_server_ip(new_server)
 
         if server is None and new_server is not None:
+            new_server['share_network_id'] = share['share_network_id']
+            new_server['ip'] = self._get_server_ip(new_server)
+            new_server['ssh'] = self._get_ssh_connection(new_server)
             for helper in self._helpers.values():
                 helper.init_helper(new_server)
+        elif server and new_server:
+            new_server['share_network_id'] = server['share_network_id']
+            new_server['ip'] = server['ip']
+            new_server['ssh'] = server['ssh']
+
         self.share_networks_servers[share['share_network_id']] = new_server
         return new_server
 
+    def _get_ssh_connection(self, server):
+        ssh_pool = utils.SSHPool(server['ip'], 22, None,
+                         self.configuration.service_instance_user,
+                         password=self.configuration.service_instance_password,
+                         privatekey=self.configuration.path_to_private_key,
+                         max_size=1)
+        return ssh_pool.create()
+
     def _get_key(self, context):
+        if not os.path.exists(self.configuration.path_to_public_key) or \
+                not os.path.exists(self.configuration.path_to_private_key):
+            return
         keypair_name = self.configuration.manila_service_keypair_name
         keypairs = [k for k in self.compute_api.keypair_list(context)
                     if k.name == keypair_name]
@@ -414,7 +430,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         elif len(images) > 1:
             raise exception.ManilaException('Ambigious image name')
 
-        key_name = self._get_key(context)
+        key_name = None
+        if self.configuration.path_to_public_key and self.configuration.\
+                                                           path_to_private_key:
+            key_name = self._get_key(context)
+        if not self.configuration.service_instance_password and not key_name:
+            raise exception.ManilaException('Neither service insance password '
+                                            'nor key are available')
 
         port = self._setup_network_for_instance(context, share, old_server_ip)
         try:
@@ -451,7 +473,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         while time.time() - t < self.configuration.max_time_to_build_instance:
             LOG.debug('Checking server availability')
             try:
-                _ssh_exec(service_instance, ['echo', 'Hello'])
+                socket.socket().connect((service_instance['ip'], 22))
                 return service_instance
             except Exception as e:
                 LOG.debug(e)
@@ -477,51 +499,24 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             service_subnet = service_subnets[0]
 
-        service_routers = [router for router in self.neutron_api.router_list()
-             if router['name'] == share['share_network_id']]
-        if len(service_routers) > 1:
-            raise exception.ManilaException('Ambigious routers')
-        elif not service_routers:
-            service_router = self.neutron_api.router_create(
-                                                   self.service_tenant_id,
-                                                   share['share_network_id'])
-        else:
-            service_router = service_routers[0]
+        share_network = self.db.share_network_get(context,
+                                                  share['share_network_id'])
+        private_router = self._get_private_router(share_network)
         try:
-            self.neutron_api.router_add_interface(service_router['id'],
+            self.neutron_api.router_add_interface(private_router['id'],
                                                   service_subnet['id'])
         except Exception as e:
             LOG.debug(e)
             if 'already has' not in str(e):
                 raise
-        share_network = self.db.share_network_get(context,
-                                                  share['share_network_id'])
-        try:
-            self.neutron_api.router_add_interface(service_router['id'], None,
-                                 share_network['network_allocations'][0]['id'])
-        except Exception as e:
-            LOG.debug(e)
-            if 'already has' not in str(e):
-                raise
 
-        private_subnet = \
-                self.neutron_api.get_subnet(share_network['neutron_subnet_id'])
-
-        self.neutron_api.router_update_routes(service_router['id'], {
-                            'routes': [{
-                                        'destination': '0.0.0.0/0',
-                                        'nexthop': private_subnet['gateway_ip']
-                                        }]})
-        port_for_server = self.neutron_api.create_port(self.service_tenant_id,
+        return self.neutron_api.create_port(self.service_tenant_id,
                                             self.service_network_id,
                                             subnet_id=service_subnet['id'],
                                             fixed_ip=old_server_ip,
                                             device_owner='manila')
-        self._ensure_routes(share_network,
-                            port_for_server['fixed_ips'][0]['ip_address'])
-        return port_for_server
 
-    def _ensure_routes(self, share_network, server_ip):
+    def _get_private_router(self, share_network):
         private_subnet = self.neutron_api.\
                 get_subnet(share_network['neutron_subnet_id'])
         private_subnet_gateway_port = [p for p in self.neutron_api.list_ports(
@@ -531,17 +526,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if not private_subnet_gateway_port:
             raise exception.ManilaException('Subnet gateway is not attached to'
                                             'the router')
-        private_subnet_gateway_router = self.neutron_api.show_router(
-                                  private_subnet_gateway_port[0]['device_id']
-                                  )
-        routes = private_subnet_gateway_router['routes']
-        router_ip = share_network['network_allocations'][0]['ip_address']
-        new_routes = {'destination': server_ip + '/32',
-                       'nexthop': router_ip}
-        if new_routes not in routes:
-            routes.append(new_routes)
-            self.neutron_api.router_update_routes(
-                private_subnet_gateway_router['id'], {'routes': routes})
+        private_subnet_router = self.neutron_api.show_router(
+                                  private_subnet_gateway_port[0]['device_id'])
+        return private_subnet_router
 
     def _setup_connectivity_with_service_instances(self):
         vif_driver = getattr(interface, self.configuration.interface_driver)()
@@ -824,13 +811,18 @@ class NASHelperBase(object):
 class NFSHelper(NASHelperBase):
     """Interface to work with share."""
 
-    def __init__(self, *args):
-        super(NFSHelper, self).__init__(*args)
-
     def create_export(self, server, share_name, recreate=False):
         """Create new export, delete old one if exists."""
         return ':'.join([server['ip'],
             os.path.join(self.configuration.share_mount_path, share_name)])
+
+    def init_helper(self, server):
+        try:
+            _ssh_exec(server, ['sudo', 'exportfs'])
+        except Exception as e:
+            LOG.error(e)
+            if 'command not found' in str(e):
+                raise
 
     def remove_export(self, server, share_name):
         """Remove export."""
