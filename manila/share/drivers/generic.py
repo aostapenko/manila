@@ -23,8 +23,8 @@ import ConfigParser
 import netaddr
 import os
 import re
-import socket
 import shutil
+import socket
 import threading
 import time
 
@@ -435,8 +435,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                            path_to_private_key:
             key_name = self._get_key(context)
         if not self.configuration.service_instance_password and not key_name:
-            raise exception.ManilaException('Neither service insance password '
-                                            'nor key are available')
+            raise exception.ManilaException('Neither service instance password'
+                                            ' nor key are available')
 
         port = self._setup_network_for_instance(context, share, old_server_ip)
         try:
@@ -547,6 +547,19 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         # ensure that interface is first in the list
         device = ip_lib.IPDevice(interface_name)
         device.route.pullup_route(interface_name)
+
+        # here we are checking for garbage devices from removed service port
+        list_dev = [(dev.name, set(str(netaddr.IPNetwork(a['cidr']).cidr)
+                                   for a in dev.addr.list()
+                                   if a['ip_version'] == 4))
+                    for dev in ip_lib.IPWrapper().get_devices()
+                    if dev.name != device.name]
+        device_cidr_set = set(str(netaddr.IPNetwork(a['cidr']).cidr)
+                              for a in device.addr.list()
+                              if a['ip_version'] == 4)
+        for dev_name, brd_set in list_dev:
+            if device_cidr_set & brd_set:
+                vif_driver.unplug(dev_name)
 
         return interface_name
 
@@ -773,7 +786,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.InvalidShare(reason='Wrong share type')
 
     def get_network_allocations_number(self):
-        return 1
+        return 0
 
     def setup_network(self, network_info):
         pass
