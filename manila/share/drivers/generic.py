@@ -136,8 +136,8 @@ def synchronized(f):
 
 
 def _ssh_exec(server, command):
-    if not server['ssh']._transport.active:
-        server['ssh'].close()
+    if not server['ssh'].get_transport().is_active():
+        server['ssh_pool'].remove(server['ssh'])
         server['ssh'] = server['ssh_pool'].create()
     return utils.ssh_execute(server['ssh'], ' '.join(command))
 
@@ -338,11 +338,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     @synchronized
     def _get_service_instance(self, context, share, create=True):
-        server = self.share_networks_servers.get(share['share_network_id'],
-                                                 None)
         service_instance_name = self._get_service_instance_name(share)
         search_opts = {'name': service_instance_name}
         servers = self.compute_api.server_list(context, search_opts, True)
+        server = None
         new_server = None
         old_server_ip = None
         if len(servers) > 1:
@@ -366,8 +365,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 else:
                     raise exception.ManilaException('Server deletion timeout')
                 new_server = None
-                server = None
                 servers = []
+            else:
+                server = self.share_networks_servers.get(
+                                            share['share_network_id'], None)
 
         if not servers:
             if create:
@@ -558,7 +559,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                    for a in dev.addr.list()
                                    if a['ip_version'] == 4))
                     for dev in ip_lib.IPWrapper().get_devices()
-                    if dev.name != device.name]
+                    if dev.name != device.name and
+                    dev.name[:3] == device.name[:3]]
+
         device_cidr_set = set(str(netaddr.IPNetwork(a['cidr']).cidr)
                               for a in device.addr.list()
                               if a['ip_version'] == 4)
