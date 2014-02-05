@@ -150,8 +150,6 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         super(GenericShareDriver, self).__init__(*args, **kwargs)
         self.admin_context = context.get_admin_context()
         self.db = db
-        self.share_networks_locks = {}
-        self.share_networks_servers = {}
         self.configuration.append_config_values(share_opts)
         self._helpers = None
 
@@ -165,13 +163,19 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self.compute_api = compute.API()
         self.volume_api = volume.API()
         self.neutron_api = neutron.API()
-        while True:
+        self.share_networks_locks = {}
+        self.share_networks_servers = {}
+        attempts = 5
+        while attempts:
             try:
                 self.service_tenant_id = self.neutron_api.admin_tenant_id
                 break
             except Exception as e:
                 LOG.debug(e)
+                attempts -= 1
                 time.sleep(3)
+        else:
+            raise exception.ManilaException('Can\'t receive service tenant id')
         self.service_network_id = self._get_service_network()
         self._setup_connectivity_with_service_instances()
         self._setup_helpers()
@@ -329,12 +333,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                     share['share_network_id']
 
     def _get_server_ip(self, server):
-        ip = None
         try:
-            ip = server['networks'].values()[0][0]
+            return server['networks'].values()[0][0]
         except Exception as e:
             LOG.debug(e)
-        return ip
+            return None
 
     @synchronized
     def _get_service_instance(self, context, share, create=True):
