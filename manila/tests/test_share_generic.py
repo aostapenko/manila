@@ -45,6 +45,7 @@ def fake_share(**kwargs):
         'name': 'fakename',
         'size': 1,
         'share_proto': 'NFS',
+        'share_network_id': 'fake share network id',
         'export_location': '127.0.0.1:/mnt/nfs/volume-00002',
     }
     share.update(kwargs)
@@ -57,7 +58,7 @@ def fake_snapshot(**kwargs):
         'share_name': 'fakename',
         'share_id': 'fakeid',
         'name': 'fakesnapshotname',
-    'share_size': 1,
+        'share_size': 1,
         'share_proto': 'NFS',
         'export_location': '127.0.0.1:/mnt/nfs/volume-00002',
     }
@@ -97,6 +98,9 @@ class GenericShareDriverTestCase(test.TestCase):
         self._driver.neutron_api = fake_network.API()
         self._driver.compute_api = fake_compute.API()
         self._driver.volume_api = fake_volume.API()
+        self._driver.share_networks_locks = {}
+        self._driver.share_networks_servers = {}
+        self.stubs.Set(generic, '_ssh_exec', mock.Mock())
         self._driver._helpers = {
             'CIFS': self._helper_cifs,
             'NFS': self._helper_nfs,
@@ -119,20 +123,16 @@ class GenericShareDriverTestCase(test.TestCase):
                        mock.Mock())
         self.stubs.Set(self._driver,
                        '_get_service_network',
-                       mock.Mock(return_value='fake network'))
-        CONF.set_default('share_helpers', ['NFS=fakenfs'])
-        self.stubs.Set(generic, 'importutils',
-                       mock.Mock(return_value=self._helper_nfs))
+                       mock.Mock(return_value='fake network id'))
+        self.stubs.Set(self._driver, '_setup_helpers', mock.Mock())
         self._driver.do_setup(self._context)
         neutron.API.assert_called_once()
         volume.API.assert_called_once()
         compute.API.assert_called_once()
+        self._driver._setup_helpers.assert_called_once()
         self._driver._setup_connectivity_with_service_instances.\
                                                         assert_called_once()
-        generic.importutils.import_class.assert_has_calls([
-            mock.call('fakenfs')
-        ])
-        self.assertEqual(self._driver.service_network_id, 'fake network')
+        self.assertEqual(self._driver.service_network_id, 'fake network id')
 
     def test_do_setup_exception(self):
         self.stubs.Set(neutron, 'API', mock.Mock())
@@ -145,17 +145,104 @@ class GenericShareDriverTestCase(test.TestCase):
                           self._driver.do_setup, self._context)
 
     def test_get_service_network_net_exists(self):
-        net = copy.copy(fake_network.API.network)
-        net['name'] = self._driver.configuration.service_network_name
+        net1 = copy.copy(fake_network.API.network)
+        net2 = copy.copy(fake_network.API.network)
+        net1['name'] = CONF.service_network_name
+        net1['id'] = 'fake service network id'
         self.stubs.Set(self._driver.neutron_api, 'get_all_tenant_networks',
-                mock.Mock(return_value=[net]))
+                mock.Mock(return_value=[net1, net2]))
         result = self._driver._get_service_network()
-        self.assertEqual(result, net['id'])
+        self.assertEqual(result, net1['id'])
 
     def test_get_service_network_net_does_not_exists(self):
-        net = copy.copy(fake_network.API.network)
-        net['name'] = self._driver.configuration.service_network_name
+        net = fake_network.API.network
         self.stubs.Set(self._driver.neutron_api, 'get_all_tenant_networks',
                 mock.Mock(return_value=[]))
         result = self._driver._get_service_network()
         self.assertEqual(result, net['id'])
+
+    def test_get_service_network_ambiguos(self):
+        net1 = copy.copy(fake_network.API.network)
+        net2 = copy.copy(fake_network.API.network)
+        net1['name'] = CONF.service_network_name
+        net2['name'] = CONF.service_network_name
+        self.stubs.Set(self._driver.neutron_api, 'get_all_tenant_networks',
+                mock.Mock(return_value=[net1, net2]))
+        self.assertRaises(exception.ManilaException,
+                          self._driver._get_service_network)
+
+    def test_setup_helpers(self):
+        CONF.set_default('share_helpers', ['NFS=fakenfs'])
+        self.stubs.Set(generic.importutils, 'import_class',
+                       mock.Mock(return_value=self._helper_nfs))
+        self._driver._setup_helpers()
+        generic.importutils.import_class.assert_has_calls([
+            mock.call('fakenfs')
+        ])
+        self._helper_nfs.assert_called_once_with(self._execute,
+                                             self.fake_conf,
+                                             self._driver.share_networks_locks)
+        self.assertEqual(len(self._driver._helpers), 1)
+
+    def test_create_share(self):
+        self._helper_nfs.create_export.return_value = 'fakelocation'
+        methods = ('_get_service_instance', '_allocate_container',
+                '_attach_volume', '_format_device', '_mount_device')
+        for method in methods:
+            self.stubs.Set(self._driver, method, mock.Mock())
+        result = self._driver.create_share(self._context, self.share)
+        for method in methods:
+            getattr(self._driver, method).assert_called_once()
+        self.assertEqual(result, 'fakelocation')
+
+    def test_create_share_exception(self):
+        share = fake_share(share_network_id=None)
+        self.assertRaises(exception.ManilaException, self._driver.create_share,
+                          self._context, share)
+
+    def test_format_device(self):
+        volume = {'mountpoint': 'fake_mount_point'}
+        self._driver._format_device('fake_server', volume)
+        generic._ssh_exec.assert_called_once_with('fake_server',
+                ['sudo', 'mkfs.ext4', volume['mountpoint']])
+
+    def test_mount_device(self):
+        volume = {'mountpoint': 'fake_mount_point'}
+        self.stubs.Set(self._driver, '_get_mount_path',
+                mock.Mock(return_value='fake_mount_path'))
+        self._driver._mount_device(self._context, self.share, 'fake_server',
+                                   volume)
+        generic._ssh_exec.assert_has_calls([
+            mock.call('fake_server', ['sudo', 'mkdir', '-p',
+                                      'fake_mount_path',
+                                      ';', 'sudo', 'mount',
+                                      volume['mountpoint'],
+                                      'fake_mount_path']),
+            mock.call('fake_server', ['sudo', 'chmod', '777',
+                      'fake_mount_path'])
+            ])
+
+    def test_mount_device_exception_01(self):
+        volume = {'mountpoint': 'fake_mount_point'}
+        generic._ssh_exec.side_effect = [Exception('already mounted'), None]
+        self.stubs.Set(self._driver, '_get_mount_path',
+                mock.Mock(return_value='fake_mount_path'))
+        self._driver._mount_device(self._context, self.share, 'fake_server',
+                                   volume)
+        generic._ssh_exec.assert_has_calls([
+            mock.call('fake_server', ['sudo', 'mkdir', '-p',
+                                      'fake_mount_path',
+                                      ';', 'sudo', 'mount',
+                                      volume['mountpoint'],
+                                      'fake_mount_path']),
+            mock.call('fake_server', ['sudo', 'chmod', '777',
+                      'fake_mount_path'])
+            ])
+
+    def test_mount_device_exception_02(self):
+        volume = {'mountpoint': 'fake_mount_point'}
+        generic._ssh_exec.side_effect = Exception
+        self.stubs.Set(self._driver, '_get_mount_path',
+                mock.Mock(return_value='fake_mount_path'))
+        self.assertRaises(Exception, self._driver._mount_device,
+                          self._context, self.share, 'fake_server', volume)
