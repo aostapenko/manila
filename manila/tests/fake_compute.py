@@ -19,12 +19,27 @@
 from oslo.config import cfg
 
 from manila.openstack.common import log as logging
-from manila.openstack.common import uuidutils
 
 
 CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 
+class FakeServer(object):
+    def __init__(self, **kwargs):
+        self.id = kwargs.get('id') or 'fake_id'
+
+    def __getitem__(self, attr):
+        return getattr(self, attr)
+
+
 class API(object):
     """Fake Compute API"""
+    def instance_volume_attach(self, ctx, server_id, volume_id, mount_path):
+        pass
+
+    def instance_volume_detach(self, ctx, server_id, volume_id):
+        pass
+
+    def instance_volumes_list(self, ctx, server_id):
+        pass
