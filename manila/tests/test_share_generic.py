@@ -94,13 +94,16 @@ class GenericShareDriverTestCase(test.TestCase):
                                                   execute=self._execute,
                                                   configuration=self.fake_conf)
         self._driver.service_tenant_id = 'service tenant id'
-        self._driver.service_tenant_id = 'service tenant id'
+        self._driver.service_network_id = 'service network id'
         self._driver.neutron_api = fake_network.API()
         self._driver.compute_api = fake_compute.API()
         self._driver.volume_api = fake_volume.API()
         self._driver.share_networks_locks = {}
         self._driver.share_networks_servers = {}
+        self._driver.admin_context = self._context
         self.stubs.Set(generic, '_ssh_exec', mock.Mock())
+        self.stubs.Set(generic, 'synchronized', mock.Mock(side_effect=
+                                                          lambda f: f))
         self._driver._helpers = {
             'CIFS': self._helper_cifs,
             'NFS': self._helper_nfs,
@@ -206,7 +209,7 @@ class GenericShareDriverTestCase(test.TestCase):
         generic._ssh_exec.assert_called_once_with('fake_server',
                 ['sudo', 'mkfs.ext4', volume['mountpoint']])
 
-    def test_mount_device(self):
+    def _test_mount_device(self):
         volume = {'mountpoint': 'fake_mount_point'}
         self.stubs.Set(self._driver, '_get_mount_path',
                 mock.Mock(return_value='fake_mount_path'))
@@ -236,7 +239,7 @@ class GenericShareDriverTestCase(test.TestCase):
                                       volume['mountpoint'],
                                       'fake_mount_path']),
             mock.call('fake_server', ['sudo', 'chmod', '777',
-                      'fake_mount_path'])
+                                      'fake_mount_path'])
             ])
 
     def test_mount_device_exception_02(self):
@@ -246,3 +249,164 @@ class GenericShareDriverTestCase(test.TestCase):
                 mock.Mock(return_value='fake_mount_path'))
         self.assertRaises(Exception, self._driver._mount_device,
                           self._context, self.share, 'fake_server', volume)
+
+    def test_umount_device(self):
+        self.stubs.Set(self._driver, '_get_mount_path',
+                mock.Mock(return_value='fake_mount_path'))
+        self._driver._unmount_device(self._context, self.share, 'fake_server')
+        generic._ssh_exec.assert_called_once_with('fake_server',
+            ['sudo', 'umount', 'fake_mount_path', ';', 'sudo', 'rmdir',
+             'fake_mount_path'])
+
+    def test_get_mount_path(self):
+        result = self._driver._get_mount_path(self.share)
+        self.assertEqual(result, os.path.join(CONF.share_mount_path,
+                                              self.share['name']))
+
+    def test_attach_volume_not_attached(self):
+        fake_server = fake_compute.FakeServer()
+        availiable_volume = fake_volume.FakeVolume()
+        attached_volume = fake_volume.FakeVolume(status='in-use')
+        self.stubs.Set(self._driver, '_get_device_path',
+                       mock.Mock(return_value='fake_device_path'))
+        self.stubs.Set(self._driver.compute_api, 'instance_volume_attach',
+                       mock.Mock())
+        self.stubs.Set(self._driver.volume_api, 'get',
+                       mock.Mock(return_value=attached_volume))
+        result = self._driver._attach_volume(self._context, self.share,
+                                             fake_server, availiable_volume)
+        self._driver._get_device_path.assert_called_once_with(self._context,
+                                                              fake_server)
+        self._driver.compute_api.instance_volume_attach.\
+                assert_called_once_with(self._context, fake_server['id'],
+                        availiable_volume['id'], 'fake_device_path')
+        self._driver.volume_api.get.\
+                assert_called_once_with(self._context, attached_volume['id'])
+        self.assertEqual(result, attached_volume)
+
+    def test_attach_volume_attached_correct(self):
+        fake_server = fake_compute.FakeServer()
+        attached_volume = fake_volume.FakeVolume(status='in-use')
+        self.stubs.Set(self._driver.compute_api, 'instance_volumes_list',
+                       mock.Mock(return_value=[attached_volume]))
+        result = self._driver._attach_volume(self._context, self.share,
+                                             fake_server, attached_volume)
+        self.assertEqual(result, attached_volume)
+
+    def test_attach_volume_attached_incorrect(self):
+        fake_server = fake_compute.FakeServer()
+        attached_volume = fake_volume.FakeVolume(status='in-use')
+        anoter_volume = fake_volume.FakeVolume(id='fake_id2', status='in-use')
+        self.stubs.Set(self._driver.compute_api, 'instance_volumes_list',
+                       mock.Mock(return_value=[anoter_volume]))
+        self.assertRaises(exception.ManilaException,
+                          self._driver._attach_volume, self._context,
+                          self.share, fake_server, attached_volume)
+
+    def test_attach_volume_failed_attach(self):
+        fake_server = fake_compute.FakeServer()
+        availiable_volume = fake_volume.FakeVolume()
+        self.stubs.Set(self._driver, '_get_device_path',
+                       mock.Mock(return_value='fake_device_path'))
+        self.stubs.Set(self._driver.compute_api, 'instance_volume_attach',
+                       mock.Mock(side_effect=Exception))
+        self.assertRaises(Exception, self._driver._attach_volume,
+                          self._context, self.share, fake_server,
+                          availiable_volume)
+
+    def test_attach_volume_error(self):
+        fake_server = fake_compute.FakeServer()
+        availiable_volume = fake_volume.FakeVolume()
+        error_volume = fake_volume.FakeVolume(status='error')
+        self.stubs.Set(self._driver, '_get_device_path',
+                       mock.Mock(return_value='fake_device_path'))
+        self.stubs.Set(self._driver.compute_api, 'instance_volume_attach',
+                       mock.Mock())
+        self.stubs.Set(self._driver.volume_api, 'get',
+                       mock.Mock(return_value=error_volume))
+        self.assertRaises(exception.ManilaException,
+                          self._driver._attach_volume,
+                          self._context, self.share,
+                          fake_server, availiable_volume)
+
+    def test_get_volume(self):
+        volume = fake_volume.FakeVolume(
+                display_name=CONF.volume_name_template % self.share['id'])
+        self.stubs.Set(self._driver.volume_api, 'get_all',
+                       mock.Mock(return_value=[volume]))
+        result = self._driver._get_volume(self._context, self.share['id'])
+        self.assertEqual(result, volume)
+
+    def test_get_volume_none(self):
+        self.stubs.Set(self._driver.volume_api, 'get_all',
+                       mock.Mock(return_value=[]))
+        result = self._driver._get_volume(self._context, self.share['id'])
+        self.assertEqual(result, None)
+
+    def test_get_volume_error(self):
+        volume = fake_volume.FakeVolume(
+                display_name=CONF.volume_name_template % self.share['id'])
+        self.stubs.Set(self._driver.volume_api, 'get_all',
+                       mock.Mock(return_value=[volume, volume]))
+        self.assertRaises(exception.ManilaException,
+                self._driver._get_volume, self._context, self.share['id'])
+
+    def test_get_volume_snapshot(self):
+        volume_snapshot = fake_volume.FakeVolumeSnapshot(display_name=
+                CONF.volume_snapshot_name_template % self.snapshot['id'])
+        self.stubs.Set(self._driver.volume_api, 'get_all_snapshots',
+                       mock.Mock(return_value=[volume_snapshot]))
+        result = self._driver._get_volume_snapshot(self._context,
+                self.snapshot['id'])
+        self.assertEqual(result, volume_snapshot)
+
+    def test_get_volume_snapshot_none(self):
+        self.stubs.Set(self._driver.volume_api, 'get_all_snapshots',
+                       mock.Mock(return_value=[]))
+        result = self._driver._get_volume_snapshot(self._context,
+                self.share['id'])
+        self.assertEqual(result, None)
+
+    def test_get_volume_snapshot_error(self):
+        volume_snapshot = fake_volume.FakeVolumeSnapshot(display_name=
+                CONF.volume_snapshot_name_template % self.snapshot['id'])
+        self.stubs.Set(self._driver.volume_api, 'get_all_snapshots',
+                mock.Mock(return_value=[volume_snapshot, volume_snapshot]))
+        self.assertRaises(exception.ManilaException,
+            self._driver._get_volume_snapshot, self._context, self.share['id'])
+
+    def test_detach_volume(self):
+        fake_server = fake_compute.FakeServer()
+        availiable_volume = fake_volume.FakeVolume()
+        attached_volume = fake_volume.FakeVolume(status='in-use')
+        self.stubs.Set(self._driver, '_get_volume',
+                       mock.Mock(return_value=attached_volume))
+        self.stubs.Set(self._driver.compute_api, 'instance_volumes_list',
+                       mock.Mock(return_value=[attached_volume]))
+        self.stubs.Set(self._driver.compute_api, 'instance_volume_detach',
+                       mock.Mock())
+        self.stubs.Set(self._driver.volume_api, 'get',
+                       mock.Mock(return_value=availiable_volume))
+        self._driver._detach_volume(self._context, self.share, fake_server)
+        self._driver.compute_api.instance_volume_detach.\
+                assert_called_once_with(self._context, fake_server['id'],
+                                        availiable_volume['id'])
+        self._driver.volume_api.get.\
+                assert_called_once_with(self._context, availiable_volume['id'])
+
+    def test_detach_volume_detached(self):
+        fake_server = fake_compute.FakeServer()
+        availiable_volume = fake_volume.FakeVolume()
+        attached_volume = fake_volume.FakeVolume(status='in-use')
+        self.stubs.Set(self._driver, '_get_volume',
+                       mock.Mock(return_value=attached_volume))
+        self.stubs.Set(self._driver.compute_api, 'instance_volumes_list',
+                       mock.Mock(return_value=[]))
+        self.stubs.Set(self._driver.volume_api, 'get',
+                       mock.Mock(return_value=availiable_volume))
+        self.stubs.Set(self._driver.compute_api, 'instance_volume_detach',
+                       mock.Mock())
+        self._driver._detach_volume(self._context, self.share, fake_server)
+        self.assertFalse(self._driver.volume_api.get.called)
+        self.assertFalse(self._driver.compute_api.
+                                        instance_volume_detach.called)

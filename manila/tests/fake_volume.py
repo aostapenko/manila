@@ -26,5 +26,33 @@ CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 
+class FakeVolume(object):
+    def __init__(self, **kwargs):
+        self.id = kwargs.get('id') or 'fake_id'
+        self.status = kwargs.get('status') or 'available'
+        self.display_name = kwargs.get('display_name') or 'fake_name'
+
+    def __getitem__(self, attr):
+        return getattr(self, attr)
+
+
+class FakeVolumeSnapshot(object):
+    def __init__(self, **kwargs):
+        self.id = kwargs.get('id') or 'fake_id'
+        self.status = kwargs.get('status') or 'available'
+        self.display_name = kwargs.get('display_name') or 'fake_name'
+
+    def __getitem__(self, attr):
+        return getattr(self, attr)
+
+
 class API(object):
     """Fake Volume API"""
+    def get(self, volume_id):
+        pass
+
+    def get_all(self, search_opts):
+        pass
+
+    def get_all_snapshots(self, search_opts):
+        pass

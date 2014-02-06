@@ -1,5 +1,3 @@
-# vim: tabstop=4 shiftwidth=4 softtabstop=4
-
 # Copyright 2014 Mirantis Inc.
 # All Rights Reserved.
 #
@@ -285,7 +283,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             search_opts['all_tenants'] = True
         volumes_list = self.volume_api.get_all(context, search_opts)
         volume = None
-        if len(volumes_list) == 1:
+        if len(volumes_list) > 1:
+            raise exception.ManilaException('Error. Ambigious volumes')
+        elif len(volumes_list) == 1:
             volume = volumes_list[0]
         return volume
 
@@ -295,7 +295,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         volume_snapshot_list = self.volume_api.get_all_snapshots(context,
                                         {'display_name': volume_snapshot_name})
         volume_snapshot = None
-        if len(volume_snapshot_list):
+        if len(volume_snapshot_list) > 1:
+            raise exception.ManilaException('Error. Ambigious volume snaphots')
+        elif len(volume_snapshot_list):
             volume_snapshot = volume_snapshot_list[0]
         return volume_snapshot
 
