@@ -19,7 +19,6 @@
 from oslo.config import cfg
 
 from manila.openstack.common import log as logging
-from manila.openstack.common import uuidutils
 
 
 CONF = cfg.CONF
@@ -30,6 +29,7 @@ class FakeVolume(object):
     def __init__(self, **kwargs):
         self.id = kwargs.get('id') or 'fake_id'
         self.status = kwargs.get('status') or 'available'
+        self.device = kwargs.get('device') or ''
         self.display_name = kwargs.get('display_name') or 'fake_name'
 
     def __getitem__(self, attr):
