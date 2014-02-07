@@ -336,7 +336,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _get_server_ip(self, server):
         try:
-            return server['networks'].values()[0][0]
+            net = server['networks'][self.configuration.service_network_name]
+            return net[0]
         except Exception as e:
             LOG.debug(e)
             return None
@@ -346,9 +347,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         service_instance_name = self._get_service_instance_name(share)
         search_opts = {'name': service_instance_name}
         servers = self.compute_api.server_list(context, search_opts, True)
-        server = None
-        new_server = None
-        old_server_ip = None
+        server = new_server = old_server_ip = None
         if len(servers) > 1:
             raise exception.ManilaException('Ambigious service instances')
         elif len(servers) == 1:

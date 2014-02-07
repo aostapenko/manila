@@ -27,11 +27,17 @@ LOG = logging.getLogger(__name__)
 
 class FakeServer(object):
     def __init__(self, **kwargs):
-        self.id = kwargs.get('id') or 'fake_id'
-        self.network = kwargs.get('network') or {}
+        self.id = kwargs.pop('id', 'fake_id')
+        self.status = kwargs.pop('status', 'ACTIVE')
+        self.networks = kwargs.pop('networks', None)
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
     def __getitem__(self, attr):
         return getattr(self, attr)
+
+    def __setitem__(self, attr, value):
+        setattr(self, attr, value)
 
 
 class API(object):
@@ -43,4 +49,16 @@ class API(object):
         pass
 
     def instance_volumes_list(self, ctx, server_id):
+        pass
+
+    def server_list(self, ctx, search_opts, all_tenants):
+        pass
+
+    def server_create(self, *args, **kwargs):
+        pass
+
+    def server_delete(self, *args, **kwargs):
+        pass
+
+    def server_get(self, *args, **kwargs):
         pass
