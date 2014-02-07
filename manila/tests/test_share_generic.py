@@ -410,3 +410,32 @@ class GenericShareDriverTestCase(test.TestCase):
         self.assertFalse(self._driver.volume_api.get.called)
         self.assertFalse(self._driver.compute_api.
                                         instance_volume_detach.called)
+
+    def test_get_device_path_01(self):
+        fake_server = fake_compute.FakeServer()
+        vol_list = [[], [fake_volume.FakeVolume(device='/dev/vdc')],
+                [fake_volume.FakeVolume(device='/dev/vdd')]]
+        self.stubs.Set(self._driver.compute_api, 'instance_volumes_list',
+                mock.Mock(side_effect=lambda x, y: vol_list.pop()))
+        result = self._driver._get_device_path(self._context, fake_server)
+        self.assertEqual(result, '/dev/vdb')
+
+    def test_get_device_path_02(self):
+        fake_server = fake_compute.FakeServer()
+        vol_list = [[fake_volume.FakeVolume(device='/dev/vdb')],
+                [fake_volume.FakeVolume(device='/dev/vdb'),
+                    fake_volume.FakeVolume(device='/dev/vdd')]]
+        self.stubs.Set(self._driver.compute_api, 'instance_volumes_list',
+                mock.Mock(side_effect=lambda x, y: vol_list.pop()))
+        result = self._driver._get_device_path(self._context, fake_server)
+        self.assertEqual(result, '/dev/vdc')
+
+    def test_get_service_instance_name(self):
+        result = self._driver._get_service_instance_name(self.share)
+        self.assertEqual(result, CONF.service_instance_name_template %
+                self.share['share_network_id'])
+
+    def test_get_server_ip(self):
+        fake_server = fake_compute.FakeServer()
+        result = self._driver._get_server_ip(fake_server)
+
