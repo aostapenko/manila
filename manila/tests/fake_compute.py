@@ -28,6 +28,7 @@ LOG = logging.getLogger(__name__)
 class FakeServer(object):
     def __init__(self, **kwargs):
         self.id = kwargs.get('id') or 'fake_id'
+        self.network = kwargs.get('network') or {}
 
     def __getitem__(self, attr):
         return getattr(self, attr)
