@@ -496,7 +496,6 @@ class GenericShareDriverTestCase(test.TestCase):
                         ip='fake_ip', ssh_pool='fake_pool', ssh='fake_ssh')
         self._driver.share_networks_servers[self.share['share_network_id']] = \
                 fake_server
-        self.stubs.Set(self._driver.compute_api, 'server_delete', mock.Mock())
         self.stubs.Set(self._driver.compute_api, 'server_list',
                        mock.Mock(return_value=[fake_server]))
         self.stubs.Set(self._driver, '_get_ssh_pool',
