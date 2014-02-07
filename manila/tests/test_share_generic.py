@@ -436,6 +436,71 @@ class GenericShareDriverTestCase(test.TestCase):
                 self.share['share_network_id'])
 
     def test_get_server_ip(self):
+        fake_server = fake_compute.FakeServer(networks=
+                {CONF.service_network_name: '10.254.0.1'})
+        result = self._driver._get_server_ip(fake_server)
+        self.assertEqual(result,
+                fake_server['networks'][CONF.service_network_name][0])
+
+    def test_get_server_ip_none(self):
         fake_server = fake_compute.FakeServer()
         result = self._driver._get_server_ip(fake_server)
+        self.assertEqual(result, None)
 
+    def test_get_service_instance(self):
+        fake_server = fake_compute.FakeServer()
+        self.stubs.Set(self._driver.compute_api, 'server_list',
+                       mock.Mock(return_value=[]))
+        self.stubs.Set(self._driver, '_create_service_instance',
+                       mock.Mock(return_value=fake_server))
+        self.stubs.Set(self._driver, '_get_ssh_pool',
+                       mock.Mock(return_value=mock.Mock()))
+        result = self._driver._get_service_instance(self._context, self.share)
+        self._driver._get_ssh_pool.assert_called_once_with(fake_server)
+        self._driver._create_service_instance.assert_called_once()
+        self.assertEqual(result, fake_server)
+
+    def test_get_service_instance_existed(self):
+        fake_server = fake_compute.FakeServer()
+        self.stubs.Set(self._driver.compute_api, 'server_list',
+                       mock.Mock(return_value=[fake_server]))
+        self.stubs.Set(self._driver, '_get_ssh_pool',
+                       mock.Mock(return_value=mock.Mock()))
+        result = self._driver._get_service_instance(self._context, self.share)
+        self._driver._get_ssh_pool.assert_called_once_with(fake_server)
+        self.assertEqual(result, fake_server)
+
+    def test_get_service_instance_existed_non_active(self):
+        fake_error_server = fake_compute.FakeServer(status='error')
+        fake_new_server = fake_compute.FakeServer(status='error')
+        self.stubs.Set(self._driver.compute_api, 'server_delete', mock.Mock())
+        self.stubs.Set(self._driver.compute_api, 'server_list',
+                       mock.Mock(return_value=[fake_error_server]))
+        self.stubs.Set(self._driver, '_create_service_instance',
+                       mock.Mock(return_value=fake_new_server))
+        self.stubs.Set(self._driver.compute_api, 'server_get',
+                       mock.Mock(side_effect=Exception('could not be found')))
+        self.stubs.Set(self._driver, '_get_ssh_pool',
+                       mock.Mock(return_value=mock.Mock()))
+        result = self._driver._get_service_instance(self._context, self.share)
+        self._driver.compute_api.server_get.\
+                assert_called_once_with(self._context, fake_error_server['id'])
+        self._driver.compute_api.server_delete.\
+                assert_called_once_with(self._context, fake_error_server['id'])
+        self._driver._create_service_instance.assert_called_once()
+        self._driver._get_ssh_pool.assert_called_once_with(fake_new_server)
+        self.assertEqual(result, fake_new_server)
+
+    def test_get_service_instance_existed_restore(self):
+        fake_server = fake_compute.FakeServer(share_network_id='fake_id',
+                        ip='fake_ip', ssh_pool='fake_pool', ssh='fake_ssh')
+        self._driver.share_networks_servers[self.share['share_network_id']] = \
+                fake_server
+        self.stubs.Set(self._driver.compute_api, 'server_delete', mock.Mock())
+        self.stubs.Set(self._driver.compute_api, 'server_list',
+                       mock.Mock(return_value=[fake_server]))
+        self.stubs.Set(self._driver, '_get_ssh_pool',
+                       mock.Mock(return_value=mock.Mock()))
+        result = self._driver._get_service_instance(self._context, self.share)
+        self.assertFalse(self._driver._get_ssh_pool.called)
+        self.assertEqual(result, fake_server)

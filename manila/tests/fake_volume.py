@@ -27,10 +27,12 @@ LOG = logging.getLogger(__name__)
 
 class FakeVolume(object):
     def __init__(self, **kwargs):
-        self.id = kwargs.get('id') or 'fake_id'
-        self.status = kwargs.get('status') or 'available'
-        self.device = kwargs.get('device') or ''
-        self.display_name = kwargs.get('display_name') or 'fake_name'
+        self.id = kwargs.get('id', 'fake_id')
+        self.status = kwargs.get('status', 'available')
+        self.device = kwargs.get('device', '')
+        self.display_name = kwargs.get('display_name', 'fake_name')
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
     def __getitem__(self, attr):
         return getattr(self, attr)
