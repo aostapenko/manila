@@ -694,5 +694,37 @@ class GenericShareDriverTestCase(test.TestCase):
                                          self._driver.service_network_id,
                                          self.share['share_network_id'],
                                          'fake_cidr')
+        self._driver.neutron_api.create_port.assert_called_once_with(
+                                         self._driver.service_tenant_id,
+                                         self._driver.service_network_id,
+                                         subnet_id='fake_subnet_id',
+                                         fixed_ip=None,
+                                         device_owner='manila')
         self._driver._get_cidr_for_subnet.assert_called_once_with([])
         self.assertEqual(result, fake_port)
+
+    def test_get_private_router(self):
+        fake_subnet = fake_network.FakeSubnet(gateway_ip='fake_ip')
+        fake_port = fake_network.FakePort(fixed_ips=[
+                        {'subnet_id': fake_subnet['id'],
+                         'ip_address': fake_subnet['gateway_ip']}],
+                        device_id='fake_router_id')
+        fake_router = fake_network.FakeRouter(id='fake_router_id')
+        self.stubs.Set(self._driver.neutron_api, 'get_subnet',
+                mock.Mock(return_value=fake_subnet))
+        self.stubs.Set(self._driver.neutron_api, 'list_ports',
+                mock.Mock(return_value=[fake_port]))
+        self.stubs.Set(self._driver.neutron_api, 'show_router',
+                mock.Mock(return_value=fake_router))
+
+        result = self._driver._get_private_router(
+                {'neutron_subnet_id': 'fake_subnet_id',
+                 'neutron_net_id': 'fake_net_id'})
+
+        self._driver.neutron_api.get_subnet.\
+                assert_called_once_with('fake_subnet_id')
+        self._driver.neutron_api.list_ports.\
+                assert_called_once_with(network_id='fake_net_id')
+        self._driver.neutron_api.show_router.\
+                assert_called_once_with('fake_router_id')
+        self.assertEqual(result, fake_router)
