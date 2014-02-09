@@ -105,6 +105,9 @@ class API(object):
         port['id'] = port_id
         return port
 
+    def delete_port(self, port_id):
+        pass
+
     def get_all_networks(self):
         """Get all networks for client."""
         net1 = self.network.copy()
