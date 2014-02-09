@@ -175,6 +175,9 @@ class API(object):
     def router_add_interface(self, *args, **kwargs):
         pass
 
+    def show_router(self, *args, **kwargs):
+        pass
+
     def get_all_networks(self):
         """Get all networks for client."""
         net1 = self.network.copy()
