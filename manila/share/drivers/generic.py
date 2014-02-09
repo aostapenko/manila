@@ -29,7 +29,6 @@ import time
 from manila import compute
 from manila import context
 from manila import exception
-from manila.network.linux import interface
 from manila.network.linux import ip_lib
 from manila.network.neutron import api as neutron
 from manila.openstack.common import importutils
@@ -102,7 +101,7 @@ share_opts = [
                default='10.254.0.0/16',
                help="Name of manila serivce network"),
     cfg.StrOpt('interface_driver',
-               default='OVSInterfaceDriver',
+               default='manila.network.linux.interface.OVSInterfaceDriver',
                help="Core neutron plugin"),
     cfg.ListOpt('share_helpers',
                 default=[
@@ -175,6 +174,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         else:
             raise exception.ManilaException('Can\'t receive service tenant id')
         self.service_network_id = self._get_service_network()
+        self.vif_driver = importutils.\
+                import_class(self.configuration.interface_driver)()
         self._setup_connectivity_with_service_instances()
         self._setup_helpers()
 
@@ -531,6 +532,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def _get_private_router(self, share_network):
         private_subnet = self.neutron_api.\
                 get_subnet(share_network['neutron_subnet_id'])
+        if not private_subnet['gateway_ip']:
+            raise exception.ManilaException('Subnet must have gateway')
         private_subnet_gateway_port = [p for p in self.neutron_api.list_ports(
              network_id=share_network['neutron_net_id'])
              if p['fixed_ips'][0]['subnet_id'] == private_subnet['id'] and
@@ -543,10 +546,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return private_subnet_router
 
     def _setup_connectivity_with_service_instances(self):
-        vif_driver = getattr(interface, self.configuration.interface_driver)()
         port = self._setup_service_port()
-        interface_name = vif_driver.get_device_name(port)
-        vif_driver.plug(port['id'], interface_name, port['mac_address'])
+        interface_name = self.vif_driver.get_device_name(port)
+        self.vif_driver.plug(port['id'], interface_name, port['mac_address'])
         ip_cidrs = []
         for fixed_ip in port['fixed_ips']:
             subnet = self.neutron_api.get_subnet(fixed_ip['subnet_id'])
@@ -554,13 +556,16 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             ip_cidr = '%s/%s' % (fixed_ip['ip_address'], net.prefixlen)
             ip_cidrs.append(ip_cidr)
 
-        vif_driver.init_l3(interface_name, ip_cidrs)
+        self.vif_driver.init_l3(interface_name, ip_cidrs)
 
         # ensure that interface is first in the list
         device = ip_lib.IPDevice(interface_name)
         device.route.pullup_route(interface_name)
 
         # here we are checking for garbage devices from removed service port
+        self._clean_garbage(device)
+
+    def _clean_garbage(self, device):
         list_dev = [(dev.name, set(str(netaddr.IPNetwork(a['cidr']).cidr)
                                    for a in dev.addr.list()
                                    if a['ip_version'] == 4))
@@ -571,11 +576,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         device_cidr_set = set(str(netaddr.IPNetwork(a['cidr']).cidr)
                               for a in device.addr.list()
                               if a['ip_version'] == 4)
-        for dev_name, brd_set in list_dev:
-            if device_cidr_set & brd_set:
-                vif_driver.unplug(dev_name)
-
-        return interface_name
+        for dev_name, cidr_set in list_dev:
+            if device_cidr_set & cidr_set:
+                self.vif_driver.unplug(dev_name)
 
     def _setup_service_port(self):
         ports = [port for port in self.neutron_api.
@@ -649,12 +652,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _deallocate_container(self, context, share):
         """Deletes cinder volume for share."""
-        volume_name = self.configuration.volume_name_template % share['id']
-        volumes_list = self.volume_api.get_all(context,
-                                         {'display_name': volume_name})
-        volume = None
-        if len(volumes_list):
-            volume = volumes_list[0]
+        volume = self._get_volume(context, share)
         if volume:
             self.volume_api.delete(context, volume['id'])
             t = time.time()
@@ -663,7 +661,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 try:
                     volume = self.volume_api.get(context, volume['id'])
                 except Exception as e:
-                    if 'could not be found' not in e.message:
+                    if 'could not be found' not in str(e):
                         raise
                     break
                 time.sleep(1)
