@@ -55,6 +55,15 @@ class API(object):
     def get(self, volume_id):
         pass
 
+    def create_snapshot_force(self, *args, **kwargs):
+        pass
+
+    def get_snapshot(self, *args, **kwargs):
+        pass
+
+    def delete_snapshot(self, *args, **kwargs):
+        pass
+
     def create(self, *args, **kwargs):
         pass
 
