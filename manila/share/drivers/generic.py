@@ -431,15 +431,18 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                           public_key)
         return keypair.name
 
-    def _create_service_instance(self, context, instance_name, share,
-                                 old_server_ip):
+    def _get_service_image(self):
         images = [image.id for image in self.compute_api.image_list(context)
                 if image.name == self.configuration.service_image_name]
         if not images:
             raise exception.ManilaException('No appropriate image was found')
         elif len(images) > 1:
             raise exception.ManilaException('Ambigious image name')
+        return images[0]
 
+    def _create_service_instance(self, context, instance_name, share,
+                                 old_server_ip):
+        service_image_id = self._get_service_image()
         key_name = None
         if self.configuration.path_to_public_key and self.configuration.\
                                                            path_to_private_key:
@@ -456,8 +459,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             self.neutron_api.delete_port(port['id'])
             raise
         service_instance = self.compute_api.server_create(context,
-                                instance_name,
-                                images[0],
+                                instance_name, service_image_id,
                                 self.configuration.service_instance_flavor_id,
                                 key_name, None, None,
                                 nics=[{'port-id': port['id']}])
