@@ -30,15 +30,12 @@ class FakeNetwork(object):
     def __init__(self, **kwargs):
         self.id = kwargs.pop('id', 'fake_net_id')
         self.name = kwargs.pop('name', 'net_name')
-        self.subnets = kwargs.pop('subnets', ['fake_subnet_id'])
+        self.subnets = kwargs.pop('subnets', [])
         for key, value in kwargs.items():
             setattr(self, key, value)
 
     def __getitem__(self, attr):
         return getattr(self, attr)
-
-    def __setitem__(self, attr, value):
-        setattr(self, attr, value)
 
 
 class FakeSubnet(object):
@@ -52,22 +49,17 @@ class FakeSubnet(object):
     def __getitem__(self, attr):
         return getattr(self, attr)
 
-    def __setitem__(self, attr, value):
-        setattr(self, attr, value)
-
 
 class FakePort(object):
     def __init__(self, **kwargs):
         self.id = kwargs.pop('id', 'fake_subnet_id')
         self.network_id = kwargs.pop('network_id', 'fake_net_id')
+        self.fixed_ips = kwargs.pop('fixed_ips', [])
         for key, value in kwargs.items():
             setattr(self, key, value)
 
     def __getitem__(self, attr):
         return getattr(self, attr)
-
-    def __setitem__(self, attr, value):
-        setattr(self, attr, value)
 
 
 class FakeRouter(object):
@@ -176,6 +168,9 @@ class API(object):
         pass
 
     def show_router(self, *args, **kwargs):
+        pass
+
+    def update_port_fixed_ips(self, *args, **kwargs):
         pass
 
     def get_all_networks(self):

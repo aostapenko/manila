@@ -27,10 +27,10 @@ LOG = logging.getLogger(__name__)
 
 class FakeVolume(object):
     def __init__(self, **kwargs):
-        self.id = kwargs.get('id', 'fake_id')
-        self.status = kwargs.get('status', 'available')
-        self.device = kwargs.get('device', '')
-        self.display_name = kwargs.get('display_name', 'fake_name')
+        self.id = kwargs.pop('id', 'fake_vol_id')
+        self.status = kwargs.pop('status', 'available')
+        self.device = kwargs.pop('device', '')
+        self.display_name = kwargs.pop('display_name', 'fake_vol_name')
         for key, value in kwargs.items():
             setattr(self, key, value)
 
@@ -40,9 +40,11 @@ class FakeVolume(object):
 
 class FakeVolumeSnapshot(object):
     def __init__(self, **kwargs):
-        self.id = kwargs.get('id') or 'fake_id'
-        self.status = kwargs.get('status') or 'available'
-        self.display_name = kwargs.get('display_name') or 'fake_name'
+        self.id = kwargs.pop('id', 'fake_volsnap_id')
+        self.status = kwargs.pop('status', 'available')
+        self.display_name = kwargs.pop('display_name', 'fake_volsnap_name')
+        for key, value in kwargs.items():
+            setattr(self, key, value)
 
     def __getitem__(self, attr):
         return getattr(self, attr)
@@ -53,7 +55,13 @@ class API(object):
     def get(self, volume_id):
         pass
 
+    def create(self, *args, **kwargs):
+        pass
+
     def get_all(self, search_opts):
+        pass
+
+    def delete(self, volume_id):
         pass
 
     def get_all_snapshots(self, search_opts):
