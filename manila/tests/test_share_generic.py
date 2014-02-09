@@ -159,19 +159,18 @@ class GenericShareDriverTestCase(test.TestCase):
         self.assertEqual(result, net1['id'])
 
     def test_get_service_network_net_does_not_exists(self):
-        net = fake_network.API.network
+        net = fake_network.FakeNetwork()
         self.stubs.Set(self._driver.neutron_api, 'get_all_tenant_networks',
                 mock.Mock(return_value=[]))
+        self.stubs.Set(self._driver.neutron_api, 'network_create',
+                mock.Mock(return_value=net))
         result = self._driver._get_service_network()
         self.assertEqual(result, net['id'])
 
     def test_get_service_network_ambiguos(self):
-        net1 = copy.copy(fake_network.API.network)
-        net2 = copy.copy(fake_network.API.network)
-        net1['name'] = CONF.service_network_name
-        net2['name'] = CONF.service_network_name
+        net = fake_network.FakeNetwork(name=CONF.service_network_name)
         self.stubs.Set(self._driver.neutron_api, 'get_all_tenant_networks',
-                mock.Mock(return_value=[net1, net2]))
+                mock.Mock(return_value=[net, net]))
         self.assertRaises(exception.ManilaException,
                           self._driver._get_service_network)
 
@@ -574,7 +573,7 @@ class GenericShareDriverTestCase(test.TestCase):
 
     def test_create_service_instance(self):
         fake_server = fake_compute.FakeServer()
-        fake_port = fake_network.API.port
+        fake_port = fake_network.FakePort()
         self.stubs.Set(self._driver, '_get_service_image',
                        mock.Mock(return_value='fake_image_id'))
         self.stubs.Set(self._driver, '_get_key',
@@ -603,7 +602,7 @@ class GenericShareDriverTestCase(test.TestCase):
 
     def test_create_service_instance_error(self):
         fake_server = fake_compute.FakeServer(status='ERROR')
-        fake_port = fake_network.API.port
+        fake_port = fake_network.FakePort()
         self.stubs.Set(self._driver, '_get_service_image',
                        mock.Mock(return_value='fake_image_id'))
         self.stubs.Set(self._driver, '_get_key',
@@ -627,7 +626,7 @@ class GenericShareDriverTestCase(test.TestCase):
 
     def test_create_service_instance_failed_setup_connectivity(self):
         fake_server = fake_compute.FakeServer(status='ERROR')
-        fake_port = fake_network.API.port
+        fake_port = fake_network.FakePort()
         self.stubs.Set(self._driver, '_get_service_image',
                        mock.Mock(return_value='fake_image_id'))
         self.stubs.Set(self._driver, '_get_key',
@@ -659,3 +658,41 @@ class GenericShareDriverTestCase(test.TestCase):
         self.assertRaises(exception.ManilaException,
                 self._driver._create_service_instance, self._context,
                 'instance_name', self.share, None)
+
+    def test_setup_network_for_instance(self):
+        fake_service_net = fake_network.FakeNetwork(subnets=[])
+        fake_service_subnet = fake_network.\
+                FakeSubnet(name=self.share['share_network_id'])
+        fake_router = fake_network.FakeRouter()
+        fake_port = fake_network.FakePort()
+        self.stubs.Set(self._driver.neutron_api, 'get_network',
+                mock.Mock(return_value=fake_service_net))
+        self.stubs.Set(self._driver.neutron_api, 'subnet_create',
+                mock.Mock(return_value=fake_service_subnet))
+        self.stubs.Set(self._driver.db, 'share_network_get',
+                mock.Mock(return_value='fake_share_network'))
+        self.stubs.Set(self._driver, '_get_private_router',
+                mock.Mock(return_value=fake_router))
+        self.stubs.Set(self._driver.neutron_api, 'router_add_interface',
+                mock.Mock())
+        self.stubs.Set(self._driver.neutron_api, 'create_port',
+                mock.Mock(return_value=fake_port))
+        self.stubs.Set(self._driver, '_get_cidr_for_subnet',
+                mock.Mock(return_value='fake_cidr'))
+
+        result = self._driver._setup_network_for_instance(self._context,
+                self.share, None)
+
+        self._driver.neutron_api.get_network.\
+                assert_called_once_with(self._driver.service_network_id)
+        self._driver._get_private_router.\
+                assert_called_once_with('fake_share_network')
+        self._driver.neutron_api.router_add_interface.\
+                assert_called_once_with('fake_router_id', 'fake_subnet_id')
+        self._driver.neutron_api.subnet_create.assert_called_once_with(
+                                         self._driver.service_tenant_id,
+                                         self._driver.service_network_id,
+                                         self.share['share_network_id'],
+                                         'fake_cidr')
+        self._driver._get_cidr_for_subnet.assert_called_once_with([])
+        self.assertEqual(result, fake_port)

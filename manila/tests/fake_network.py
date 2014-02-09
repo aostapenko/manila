@@ -26,6 +26,64 @@ CONF = cfg.CONF
 LOG = logging.getLogger(__name__)
 
 
+class FakeNetwork(object):
+    def __init__(self, **kwargs):
+        self.id = kwargs.pop('id', 'fake_net_id')
+        self.name = kwargs.pop('name', 'net_name')
+        self.subnets = kwargs.pop('subnets', ['fake_subnet_id'])
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    def __getitem__(self, attr):
+        return getattr(self, attr)
+
+    def __setitem__(self, attr, value):
+        setattr(self, attr, value)
+
+
+class FakeSubnet(object):
+    def __init__(self, **kwargs):
+        self.id = kwargs.pop('id', 'fake_subnet_id')
+        self.network_id = kwargs.pop('network_id', 'fake_net_id')
+        self.cidr = kwargs.pop('cidr', 'fake_cidr')
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    def __getitem__(self, attr):
+        return getattr(self, attr)
+
+    def __setitem__(self, attr, value):
+        setattr(self, attr, value)
+
+
+class FakePort(object):
+    def __init__(self, **kwargs):
+        self.id = kwargs.pop('id', 'fake_subnet_id')
+        self.network_id = kwargs.pop('network_id', 'fake_net_id')
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    def __getitem__(self, attr):
+        return getattr(self, attr)
+
+    def __setitem__(self, attr, value):
+        setattr(self, attr, value)
+
+
+class FakeRouter(object):
+    def __init__(self, **kwargs):
+        self.id = kwargs.pop('id', 'fake_router_id')
+        self.name = kwargs.pop('name', 'fake_router_name')
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+    def __getitem__(self, attr):
+        return getattr(self, attr)
+
+    def __setitem__(self, attr, value):
+        setattr(self, attr, value)
+
+
 class API(object):
     """Fake Network API"""
     admin_tenant_id = 'fake admin tenant id'
@@ -106,6 +164,15 @@ class API(object):
         return port
 
     def delete_port(self, port_id):
+        pass
+
+    def get_subnet(self, subnet_id):
+        pass
+
+    def subnet_create(self, *args, **kwargs):
+        pass
+
+    def router_add_interface(self, *args, **kwargs):
         pass
 
     def get_all_networks(self):
