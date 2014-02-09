@@ -910,7 +910,6 @@ class GenericShareDriverTestCase(test.TestCase):
     def test_allocate_container_with_snaphot(self):
         fake_vol = fake_volume.FakeVolume()
         fake_vol_snap = fake_volume.FakeVolumeSnapshot()
-        fake_snap = fake_snapshot()
         self.stubs.Set(self._driver, '_get_volume_snapshot',
                        mock.Mock(return_value=fake_vol_snap))
         self.stubs.Set(self._driver.volume_api, 'create',
@@ -918,7 +917,7 @@ class GenericShareDriverTestCase(test.TestCase):
 
         result = self._driver._allocate_container(self._context,
                                                   self.share,
-                                                  fake_snap)
+                                                  self.snapshot)
         self.assertEqual(result, fake_vol)
         self._driver.volume_api.create.assert_called_once_with(self._context,
                                 self.share['size'],
@@ -949,3 +948,101 @@ class GenericShareDriverTestCase(test.TestCase):
         self._driver._get_volume.assert_called_once()
         self._driver.volume_api.delete.assert_called_once()
         self._driver.volume_api.get.assert_called_once()
+
+    def test_create_share_from_snapshot(self):
+        self._helper_nfs.create_export.return_value = 'fakelocation'
+        methods = ('_get_service_instance', '_allocate_container',
+                '_attach_volume', '_mount_device')
+        for method in methods:
+            self.stubs.Set(self._driver, method, mock.Mock())
+        result = self._driver.create_share_from_snapshot(self._context,
+                                           self.share,
+                                           self.snapshot)
+        for method in methods:
+            getattr(self._driver, method).assert_called_once()
+        self.assertEqual(result, 'fakelocation')
+
+    def test_delete_share(self):
+        fake_server = fake_compute.FakeServer()
+        self.stubs.Set(self._driver, '_get_service_instance',
+                       mock.Mock(return_value=fake_server))
+        self.stubs.Set(self._driver, '_unmount_device', mock.Mock())
+        self.stubs.Set(self._driver, '_detach_volume', mock.Mock())
+        self.stubs.Set(self._driver, '_deallocate_container', mock.Mock())
+
+        self._driver.delete_share(self._context, self.share)
+
+        self._driver._get_service_instance.assert_called_once()
+        self._driver._unmount_device.assert_called_once()
+        self._driver._detach_volume.assert_called_once()
+        self._driver._deallocate_container.assert_called_once()
+
+    def test_create_snapshot(self):
+        fake_vol = fake_volume.FakeVolume()
+        fake_vol_snap = fake_volume.FakeVolumeSnapshot()
+        self.stubs.Set(self._driver, '_get_volume',
+                       mock.Mock(return_value=fake_vol))
+        self.stubs.Set(self._driver.volume_api, 'create_snapshot_force',
+                       mock.Mock(return_value=fake_vol_snap))
+
+        self._driver.create_snapshot(self._context, self.snapshot)
+
+        self._driver._get_volume.assert_called_once()
+        self._driver.volume_api.create_snapshot_force.assert_called_once_with(
+                     self._context,
+                     fake_vol['id'],
+                     CONF.volume_snapshot_name_template % self.snapshot['id'],
+                     ''
+                )
+
+    def test_delete_snapshot(self):
+        fake_vol_snap = fake_volume.FakeVolumeSnapshot()
+        self.stubs.Set(self._driver, '_get_volume_snapshot',
+                       mock.Mock(return_value=fake_vol_snap))
+        self.stubs.Set(self._driver.volume_api, 'delete_snapshot', mock.Mock())
+        self.stubs.Set(self._driver.volume_api, 'get_snapshot',
+                    mock.Mock(side_effect=Exception('could not be found')))
+
+        self._driver.delete_snapshot(self._context, fake_vol_snap)
+
+        self._driver._get_volume_snapshot.assert_called_once()
+        self._driver.volume_api.delete_snapshot.assert_called_once()
+        self._driver.volume_api.get_snapshot.assert_called_once()
+
+    def test_ensure_share(self):
+        self._helper_nfs.create_export.return_value = 'fakelocation'
+        methods = ('_get_service_instance', '_get_volume',
+                '_attach_volume', '_mount_device')
+        for method in methods:
+            self.stubs.Set(self._driver, method, mock.Mock())
+        self._driver.ensure_share(self._context, self.share)
+        for method in methods:
+            getattr(self._driver, method).assert_called_once()
+
+    def test_allow_access(self):
+        fake_server = fake_compute.FakeServer()
+        access = {'access_type': 'ip', 'access_to': 'fake_dest'}
+        self.stubs.Set(self._driver, '_get_service_instance',
+                       mock.Mock(return_value=fake_server))
+        self._driver.allow_access(self._context, self.share, access)
+
+        self._driver._get_service_instance.assert_called_once()
+        self._driver._helpers[self.share['share_proto']].\
+                allow_access.assert_called_once_with(fake_server,
+                                                     self.share['name'],
+                                                     access['access_type'],
+                                                     access['access_to'])
+
+    def test_deny_access(self):
+        fake_server = fake_compute.FakeServer()
+        access = {'access_type': 'ip', 'access_to': 'fake_dest'}
+        self.stubs.Set(self._driver, '_get_service_instance',
+                       mock.Mock(return_value=fake_server))
+        self._driver.deny_access(self._context, self.share, access)
+
+        self._driver._get_service_instance.assert_called_once()
+        self._driver._helpers[self.share['share_proto']].\
+                deny_access.assert_called_once_with(fake_server,
+                                                    self.share['name'],
+                                                    access['access_type'],
+                                                    access['access_to'])
