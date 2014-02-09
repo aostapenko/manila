@@ -537,7 +537,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
              p['fixed_ips'][0]['ip_address'] == private_subnet['gateway_ip']]
         if not private_subnet_gateway_port:
             raise exception.ManilaException('Subnet gateway is not attached to'
-                                            'the router')
+                                            ' the router')
         private_subnet_router = self.neutron_api.show_router(
                                   private_subnet_gateway_port[0]['device_id'])
         return private_subnet_router
