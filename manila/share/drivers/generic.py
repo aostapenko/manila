@@ -773,6 +773,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         server = self._get_service_instance(self.admin_context,
                                             share,
                                             create=False)
+        if not server:
+            raise exception.ManilaException('Server not found. Try to '
+                                            'restart manila share service')
         self._get_helper(share).allow_access(server, share['name'],
                                              access['access_type'],
                                              access['access_to'])
