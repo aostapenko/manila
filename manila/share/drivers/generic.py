@@ -578,7 +578,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def _setup_connectivity_with_service_instances(self):
         """Setups connectivity with service instances by creating port
         in service network, creating and setuping required network devices.
-        """ 
+        """
         port = self._setup_service_port()
         interface_name = self.vif_driver.get_device_name(port)
         self.vif_driver.plug(port['id'], interface_name, port['mac_address'])
