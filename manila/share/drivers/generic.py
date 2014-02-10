@@ -971,7 +971,7 @@ class CIFSHelper(NASHelperBase):
         try:
             config = self._get_local_config(server['tenant_id'])
         except Exception as e:
-            LOG.debug(e.message)
+            LOG.debug(e)
         else:
             parser = ConfigParser.ConfigParser()
             parser.read(config)
@@ -999,6 +999,7 @@ class CIFSHelper(NASHelperBase):
         parser.read(config)
 
         hosts = parser.get(share_name, 'hosts allow')
+
         if access in hosts.split():
             raise exception.ShareAccessExists(access_type=access_type,
                                               access=access)
@@ -1026,7 +1027,7 @@ class CIFSHelper(NASHelperBase):
         self._restart_service(server)
 
     def _recreate_template_config(self):
-        """create new SAMBA configuration file."""
+        """Create new SAMBA configuration file."""
         if os.path.exists(self.smb_template_config):
             os.unlink(self.smb_template_config)
         parser = ConfigParser.ConfigParser()
