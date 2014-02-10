@@ -432,7 +432,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                           public_key)
         return keypair.name
 
-    def _get_service_image(self):
+    def _get_service_image(self, context):
         images = [image.id for image in self.compute_api.image_list(context)
                   if image.name == self.configuration.service_image_name]
         if not images:
@@ -443,7 +443,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _create_service_instance(self, context, instance_name, share,
                                  old_server_ip):
-        service_image_id = self._get_service_image()
+        service_image_id = self._get_service_image(context)
         key_name = None
         if self.configuration.path_to_public_key and self.configuration.\
                                                            path_to_private_key:
