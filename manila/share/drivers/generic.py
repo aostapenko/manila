@@ -102,7 +102,7 @@ share_opts = [
                help="Name of manila serivce network"),
     cfg.StrOpt('interface_driver',
                default='manila.network.linux.interface.OVSInterfaceDriver',
-               help="Core neutron plugin"),
+               help="Vif driver"),
     cfg.ListOpt('share_helpers',
                 default=[
                     'CIFS=manila.share.drivers.generic.CIFSHelper',
