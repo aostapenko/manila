@@ -133,6 +133,7 @@ def synchronized(f):
 
 
 def _ssh_exec(server, command):
+    """Executes ssh commands and checks/restores ssh connection."""
     if not server['ssh'].get_transport().is_active():
         server['ssh_pool'].remove(server['ssh'])
         server['ssh'] = server['ssh_pool'].create()
@@ -180,6 +181,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self._setup_helpers()
 
     def _get_service_network(self):
+        """Finds existing or creates new service network."""
         service_network_name = self.configuration.service_network_name
         networks = [network for network in self.neutron_api.
                     get_all_tenant_networks(self.service_tenant_id)
@@ -203,6 +205,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                     self.share_networks_locks)
 
     def create_share(self, context, share):
+        """Creates share."""
         if share['share_network_id'] is None:
             raise exception.ManilaException('Share Network is not specified')
         server = self._get_service_instance(self.admin_context, share)
@@ -215,10 +218,12 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return location
 
     def _format_device(self, server, volume):
+        """Formats attached to service vm device."""
         command = ['sudo', 'mkfs.ext4', volume['mountpoint']]
         _ssh_exec(server, command)
 
     def _mount_device(self, context, share, server, volume):
+        """Mounts attached and formatted block device to the directory."""
         mount_path = self._get_mount_path(share)
         command = ['sudo', 'mkdir', '-p', mount_path, ';']
         command.extend(['sudo', 'mount', volume['mountpoint'], mount_path])
@@ -232,6 +237,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         _ssh_exec(server, command)
 
     def _unmount_device(self, context, share, server):
+        """Unmounts device from directory on service vm."""
         mount_path = self._get_mount_path(share)
         command = ['sudo', 'umount', mount_path, ';']
         command.extend(['sudo', 'rmdir', mount_path])
@@ -241,10 +247,14 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             LOG.debug(e)
 
     def _get_mount_path(self, share):
+        """
+        Returns the path, that will be used for mount device in service vm.
+        """
         return os.path.join(self.configuration.share_mount_path, share['name'])
 
     @synchronized
     def _attach_volume(self, context, share, server, volume):
+        """Attaches cinder volume to service vm."""
         if volume['status'] == 'in-use':
             attached_volumes = [vol.id for vol in
                 self.compute_api.instance_volumes_list(self.admin_context,
@@ -278,6 +288,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return volume
 
     def _get_volume(self, context, share_id):
+        """Finds volume, associated to the specific share."""
         volume_name = self.configuration.volume_name_template % share_id
         search_opts = {'display_name': volume_name}
         if context.is_admin:
@@ -291,6 +302,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return volume
 
     def _get_volume_snapshot(self, context, snapshot_id):
+        """Finds volume snaphots, associated to the specific share snaphots."""
         volume_snapshot_name = self.configuration.\
                 volume_snapshot_name_template % snapshot_id
         volume_snapshot_list = self.volume_api.get_all_snapshots(context,
@@ -304,6 +316,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     @synchronized
     def _detach_volume(self, context, share, server):
+        """Detaches cinder volume from service vm."""
         attached_volumes = [vol.id for vol in
                 self.compute_api.instance_volumes_list(self.admin_context,
                                                        server['id'])]
@@ -322,6 +335,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 raise exception.ManilaException('Volume detach timeout')
 
     def _get_device_path(self, context, server):
+        """Returns device path, that will be used for cinder volume attaching.
+        """
         volumes = self.compute_api.instance_volumes_list(context, server['id'])
         used_literals = set(volume.device[-1] for volume in volumes
                             if '/dev/vd' in volume.device)
@@ -332,10 +347,12 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return device_name
 
     def _get_service_instance_name(self, share):
+        """Returns service vms name."""
         return self.configuration.service_instance_name_template % \
                     share['share_network_id']
 
     def _get_server_ip(self, server):
+        """Returns service vms ip address."""
         try:
             net = server['networks'][self.configuration.service_network_name]
             return net[0]
@@ -345,6 +362,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     @synchronized
     def _get_service_instance(self, context, share, create=True):
+        """Finds or creates and setups service vm."""
         service_instance_name = self._get_service_instance_name(share)
         search_opts = {'name': service_instance_name}
         servers = self.compute_api.server_list(context, search_opts, True)
@@ -398,6 +416,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return new_server
 
     def _get_ssh_pool(self, server):
+        """Returns ssh connection pool for service vm."""
         ssh_pool = utils.SSHPool(server['ip'], 22, None,
                          self.configuration.service_instance_user,
                          password=self.configuration.service_instance_password,
@@ -406,6 +425,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return ssh_pool
 
     def _get_key(self, context):
+        """Returns name of key, that will be injected to service vm."""
         if not os.path.exists(self.configuration.path_to_public_key) or \
                 not os.path.exists(self.configuration.path_to_private_key):
             return
@@ -433,6 +453,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return keypair.name
 
     def _get_service_image(self, context):
+        """Returns ID of service image, that will be used for service vm
+           creating.
+        """
         images = [image.id for image in self.compute_api.image_list(context)
                   if image.name == self.configuration.service_image_name]
         if not images:
@@ -443,6 +466,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _create_service_instance(self, context, instance_name, share,
                                  old_server_ip):
+        """Creates service vm and setups networking for it."""
         service_image_id = self._get_service_image(context)
         key_name = None
         if self.configuration.path_to_public_key and self.configuration.\
@@ -496,6 +520,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.ManilaException('Server waiting timeout')
 
     def _setup_network_for_instance(self, context, share, old_server_ip):
+        """Setups network for service vm."""
         service_network = self.neutron_api.get_network(self.service_network_id)
         all_service_subnets = [self.neutron_api.get_subnet(subnet_id)
                                for subnet_id in service_network['subnets']]
@@ -530,6 +555,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                             device_owner='manila')
 
     def _get_private_router(self, share_network):
+        """Returns router attached to private subnet gateway."""
         private_subnet = self.neutron_api.\
                 get_subnet(share_network['neutron_subnet_id'])
         if not private_subnet['gateway_ip']:
@@ -550,6 +576,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return private_subnet_router
 
     def _setup_connectivity_with_service_instances(self):
+        """Setups connectivity with service instances by creating port
+        in service network, creating and setuping required network devices.
+        """ 
         port = self._setup_service_port()
         interface_name = self.vif_driver.get_device_name(port)
         self.vif_driver.plug(port['id'], interface_name, port['mac_address'])
@@ -570,6 +599,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self._clean_garbage(device)
 
     def _clean_garbage(self, device):
+        """Finds and removes network device, that was associated with deleted
+        service port.
+        """
         list_dev = []
         for dev in ip_lib.IPWrapper().get_devices():
             if dev.name != device.name and dev.name[:3] == device.name[:3]:
@@ -587,6 +619,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 self.vif_driver.unplug(dev_name)
 
     def _setup_service_port(self):
+        """Find or creates neutron port, that will be used for connectivity
+        with service instances.
+        """
         ports = [port for port in self.neutron_api.
                  list_ports(device_id='manila-share')]
         if len(ports) > 1:
@@ -624,6 +659,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return port
 
     def _get_cidr_for_subnet(self, subnets):
+        """Returns not used cidr for service subnet creating."""
         used_cidrs = set(subnet['cidr'] for subnet in subnets)
         serv_cidr = netaddr.IPNetwork(self.configuration.service_network_cidr)
         for subnet in serv_cidr.subnet(29):
@@ -634,6 +670,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.ManilaException('No available cidrs')
 
     def _allocate_container(self, context, share, snapshot=None):
+        """Creates cinder volume, associated to share by name."""
         volume_snapshot = None
         if snapshot:
             volume_snapshot = self._get_volume_snapshot(context,
@@ -656,7 +693,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return volume
 
     def _deallocate_container(self, context, share):
-        """Deletes cinder volume for share."""
+        """Deletes cinder volume."""
         volume = self._get_volume(context, share['id'])
         if volume:
             self.volume_api.delete(context, volume['id'])
@@ -714,6 +751,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return location
 
     def delete_share(self, context, share):
+        """Deletes share."""
         if not share['share_network_id']:
             return
         server = self._get_service_instance(self.admin_context,
