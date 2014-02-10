@@ -82,7 +82,6 @@ class GenericShareDriverTestCase(test.TestCase):
 
     def setUp(self):
         super(GenericShareDriverTestCase, self).setUp()
-        fake_utils.stub_out_utils_execute(self.stubs)
         self._context = context.get_admin_context()
         self._execute = mock.Mock(return_value=('', ''))
 
@@ -113,11 +112,6 @@ class GenericShareDriverTestCase(test.TestCase):
         self.share = fake_share()
         self.access = fake_access()
         self.snapshot = fake_snapshot()
-
-    def tearDown(self):
-        super(GenericShareDriverTestCase, self).tearDown()
-        fake_utils.fake_execute_set_repliers([])
-        fake_utils.fake_execute_clear_log()
 
     def test_do_setup(self):
         self.stubs.Set(neutron, 'API', mock.Mock())
@@ -1049,3 +1043,133 @@ class GenericShareDriverTestCase(test.TestCase):
                                                     self.share['name'],
                                                     access['access_type'],
                                                     access['access_to'])
+
+
+class NFSHelperTestCase(test.TestCase):
+    """Test case for NFS helper of generic driver."""
+
+    def setUp(self):
+        super(NFSHelperTestCase, self).setUp()
+        fake_utils.stub_out_utils_execute(self.stubs)
+        self.fake_conf = Configuration(None)
+        self.stubs.Set(generic, '_ssh_exec', mock.Mock(return_value=('', '')))
+        self._execute = mock.Mock(return_value=('', ''))
+        self._helper = generic.NFSHelper(self._execute, self.fake_conf, {})
+
+    def test_create_export(self):
+        fake_server = fake_compute.FakeServer(ip='10.254.0.3')
+        ret = self._helper.create_export(fake_server, 'volume-00001')
+        expected_location = ':'.join([fake_server['ip'],
+            os.path.join(CONF.share_mount_path, 'volume-00001')])
+        self.assertEqual(ret, expected_location)
+
+    def test_allow_access(self):
+        fake_server = fake_compute.FakeServer(ip='10.254.0.3')
+        self._helper.allow_access(fake_server, 'volume-00001',
+                                  'ip', '10.0.0.2')
+        local_path = os.path.join(CONF.share_mount_path, 'volume-00001')
+        generic._ssh_exec.assert_has_calls([
+            mock.call(fake_server, ['sudo', 'exportfs']),
+            mock.call(fake_server, ['sudo', 'exportfs', '-o',
+                                    'rw,no_subtree_check',
+                                    ':'.join(['10.0.0.2', local_path])])
+            ])
+
+    def test_allow_access_no_ip(self):
+        self.assertRaises(exception.InvalidShareAccess,
+                          self._helper.allow_access, 'fake_server', 'share0',
+                          'fake', 'fakerule')
+
+    def test_deny_access(self):
+        fake_server = fake_compute.FakeServer(ip='10.254.0.3')
+        local_path = os.path.join(CONF.share_mount_path, 'volume-00001')
+        self._helper.deny_access(fake_server, 'volume-00001', 'ip', '10.0.0.2')
+        export_string = ':'.join(['10.0.0.2', local_path])
+        expected_exec = ['sudo', 'exportfs', '-u', export_string]
+        generic._ssh_exec.assert_called_once_with(fake_server, expected_exec)
+
+
+class CIFSHelperTestCase(test.TestCase):
+    """Test case for CIFS helper of generic driver."""
+
+    def setUp(self):
+        super(CIFSHelperTestCase, self).setUp()
+        self.fake_conf = Configuration(None)
+        self.stubs.Set(generic, '_ssh_exec', mock.Mock(return_value=('', '')))
+        self._execute = mock.Mock(return_value=('', ''))
+        self._helper = generic.CIFSHelper(self._execute, self.fake_conf, {})
+
+    def test_create_export(self):
+        fake_server = fake_compute.FakeServer(ip='10.254.0.3',
+                                              tenant_id='fake_tenant_id')
+        self.stubs.Set(self._helper, '_update_config', mock.Mock())
+        self.stubs.Set(self._helper, '_write_remote_config', mock.Mock())
+        self.stubs.Set(self._helper, '_restart_service', mock.Mock())
+        self.stubs.Set(self._helper, '_get_local_config', mock.Mock())
+        self.stubs.Set(generic.ConfigParser, 'ConfigParser', mock.Mock())
+
+        ret = self._helper.create_export(fake_server, 'volume-00001',
+                                         recreate=True)
+        self._helper._get_local_config.\
+                assert_called_once_with(fake_server['tenant_id'])
+        self._helper._update_config.assert_called_once()
+        self._helper._write_remote_config.assert_called_once()
+        self._helper._restart_service.assert_called_once()
+        expected_location = '//%s/%s' % (fake_server['ip'], 'volume-00001')
+        self.assertEqual(ret, expected_location)
+
+    def test_remove_export(self):
+        fake_server = fake_compute.FakeServer(ip='10.254.0.3',
+                                              tenant_id='fake_tenant_id')
+        self.stubs.Set(generic.ConfigParser, 'ConfigParser', mock.Mock())
+        self.stubs.Set(self._helper, '_get_local_config', mock.Mock())
+        self.stubs.Set(self._helper, '_update_config', mock.Mock())
+        self.stubs.Set(self._helper, '_write_remote_config', mock.Mock())
+        self._helper.remove_export(fake_server, 'volume-00001')
+        self._helper._get_local_config.assert_called_once()
+        self._helper._update_config.assert_called_once()
+        self._helper._write_remote_config.assert_called_once()
+        generic._ssh_exec.assert_called_once_with(fake_server,
+                ['sudo', 'smbcontrol', 'all', 'close-share', 'volume-00001'])
+
+    def test_allow_access(self):
+        class FakeParser(object):
+            def read(self, *args, **kwargs):
+                pass
+
+            def get(self, *args, **kwargs):
+                return ''
+
+            def set(self, *args, **kwargs):
+                pass
+
+        fake_server = fake_compute.FakeServer(ip='10.254.0.3',
+                                              tenant_id='fake_tenant_id')
+        self.stubs.Set(generic.ConfigParser, 'ConfigParser', FakeParser)
+        self.stubs.Set(self._helper, '_get_local_config', mock.Mock())
+        self.stubs.Set(self._helper, '_update_config', mock.Mock())
+        self.stubs.Set(self._helper, '_write_remote_config', mock.Mock())
+        self.stubs.Set(self._helper, '_restart_service', mock.Mock())
+
+        self._helper.allow_access(fake_server, 'volume-00001',
+                                  'ip', '10.0.0.2')
+        self._helper._get_local_config.assert_called_once()
+        self._helper._update_config.assert_called_once()
+        self._helper._write_remote_config.assert_called_once()
+        self._helper._restart_service.assert_called_once()
+
+    def test_deny_access(self):
+        fake_server = fake_compute.FakeServer(ip='10.254.0.3',
+                                              tenant_id='fake_tenant_id')
+        self.stubs.Set(generic.ConfigParser, 'ConfigParser', mock.Mock())
+        self.stubs.Set(self._helper, '_get_local_config', mock.Mock())
+        self.stubs.Set(self._helper, '_update_config', mock.Mock())
+        self.stubs.Set(self._helper, '_write_remote_config', mock.Mock())
+        self.stubs.Set(self._helper, '_restart_service', mock.Mock())
+
+        self._helper.deny_access(fake_server, 'volume-00001',
+                                  'ip', '10.0.0.2')
+        self._helper._get_local_config.assert_called_once()
+        self._helper._update_config.assert_called_once()
+        self._helper._write_remote_config.assert_called_once()
+        self._helper._restart_service.assert_called_once()
