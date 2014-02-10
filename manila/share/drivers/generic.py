@@ -657,7 +657,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _deallocate_container(self, context, share):
         """Deletes cinder volume for share."""
-        volume = self._get_volume(context, share)
+        volume = self._get_volume(context, share['id'])
         if volume:
             self.volume_api.delete(context, volume['id'])
             t = time.time()
