@@ -434,7 +434,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _get_service_image(self):
         images = [image.id for image in self.compute_api.image_list(context)
-                if image.name == self.configuration.service_image_name]
+                  if image.name == self.configuration.service_image_name]
         if not images:
             raise exception.ManilaException('No appropriate image was found')
         elif len(images) > 1:
@@ -534,15 +534,19 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 get_subnet(share_network['neutron_subnet_id'])
         if not private_subnet['gateway_ip']:
             raise exception.ManilaException('Subnet must have gateway')
-        private_subnet_gateway_port = [p for p in self.neutron_api.list_ports(
-             network_id=share_network['neutron_net_id'])
-             if p['fixed_ips'][0]['subnet_id'] == private_subnet['id'] and
-             p['fixed_ips'][0]['ip_address'] == private_subnet['gateway_ip']]
-        if not private_subnet_gateway_port:
+        private_network_ports = [p for p in self.neutron_api.list_ports(
+                                 network_id=share_network['neutron_net_id'])]
+        for p in private_network_ports:
+            fixed_ip = p['fixed_ips'][0]
+            if fixed_ip['subnet_id'] == private_subnet['id'] and \
+                     fixed_ip['ip_address'] == private_subnet['gateway_ip']:
+                private_subnet_gateway_port = p
+                break
+        else:
             raise exception.ManilaException('Subnet gateway is not attached to'
                                             ' the router')
         private_subnet_router = self.neutron_api.show_router(
-                                  private_subnet_gateway_port[0]['device_id'])
+                                  private_subnet_gateway_port['device_id'])
         return private_subnet_router
 
     def _setup_connectivity_with_service_instances(self):
@@ -566,16 +570,18 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self._clean_garbage(device)
 
     def _clean_garbage(self, device):
-        list_dev = [(dev.name, set(str(netaddr.IPNetwork(a['cidr']).cidr)
-                                   for a in dev.addr.list()
-                                   if a['ip_version'] == 4))
-                    for dev in ip_lib.IPWrapper().get_devices()
-                    if dev.name != device.name and
-                    dev.name[:3] == device.name[:3]]
-
+        list_dev = []
+        for dev in ip_lib.IPWrapper().get_devices():
+            if dev.name != device.name and dev.name[:3] == device.name[:3]:
+                cidr_set = set()
+                for a in dev.addr.list():
+                    if a['ip_version'] == 4:
+                        cidr_set.add(str(netaddr.IPNetwork(a['cidr']).cidr))
+                list_dev.append((dev.name, cidr_set))
         device_cidr_set = set(str(netaddr.IPNetwork(a['cidr']).cidr)
                               for a in device.addr.list()
                               if a['ip_version'] == 4)
+
         for dev_name, cidr_set in list_dev:
             if device_cidr_set & cidr_set:
                 self.vif_driver.unplug(dev_name)
@@ -611,8 +617,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         # If there are subnets here that means that
         # we need to add those to the port and call update.
         if subnets:
-            port_fixed_ips.extend(
-                [dict(subnet_id=s) for s in subnets])
+            port_fixed_ips.extend([dict(subnet_id=s) for s in subnets])
             port = self.neutron_api.update_port_fixed_ips(
                    port['id'], {'fixed_ips': port_fixed_ips})
 
