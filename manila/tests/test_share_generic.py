@@ -249,10 +249,11 @@ class GenericShareDriverTestCase(test.TestCase):
 
     def test_mount_device_exception_02(self):
         volume = {'mountpoint': 'fake_mount_point'}
-        generic._ssh_exec.side_effect = Exception
+        generic._ssh_exec.side_effect = exception.ManilaException
         self.stubs.Set(self._driver, '_get_mount_path',
                 mock.Mock(return_value='fake_mount_path'))
-        self.assertRaises(Exception, self._driver._mount_device,
+        self.assertRaises(exception.ManilaException,
+                          self._driver._mount_device,
                           self._context, self.share, 'fake_server', volume)
 
     def test_umount_device(self):
@@ -318,8 +319,9 @@ class GenericShareDriverTestCase(test.TestCase):
         self.stubs.Set(self._driver, '_get_device_path',
                        mock.Mock(return_value='fake_device_path'))
         self.stubs.Set(self._driver.compute_api, 'instance_volume_attach',
-                       mock.Mock(side_effect=Exception))
-        self.assertRaises(Exception, self._driver._attach_volume,
+                mock.Mock(side_effect=exception.ManilaException))
+        self.assertRaises(exception.ManilaException,
+                          self._driver._attach_volume,
                           self._context, self.share, fake_server,
                           availiable_volume)
 
@@ -678,7 +680,7 @@ class GenericShareDriverTestCase(test.TestCase):
                        mock.Mock(return_value=fake_port))
         self.stubs.Set(self._driver,
                        '_setup_connectivity_with_service_instances',
-                       mock.Mock(side_effect=Exception))
+                       mock.Mock(side_effect=exception.ManilaException))
         self.stubs.Set(self._driver.neutron_api, 'delete_port', mock.Mock())
         self.stubs.Set(self._driver.compute_api, 'server_create',
                        mock.Mock(return_value=fake_server))
@@ -686,7 +688,8 @@ class GenericShareDriverTestCase(test.TestCase):
                        mock.Mock(return_value=fake_server))
         self.stubs.Set(generic.socket, 'socket', mock.Mock())
 
-        self.assertRaises(Exception, self._driver._create_service_instance,
+        self.assertRaises(exception.ManilaException,
+                self._driver._create_service_instance,
                 self._context, 'instance_name', self.share, None)
 
         self._driver.neutron_api.delete_port.\
