@@ -404,6 +404,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             service_instance_name = self._get_service_instance_name(share)
             search_opts = {'name': service_instance_name}
             servers = self.compute_api.server_list(context, search_opts, True)
+            old_server_ip = None
             if len(servers) == 1:
                 server = servers[0]
                 old_server_ip = server['ip']
