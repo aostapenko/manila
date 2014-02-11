@@ -587,7 +587,7 @@ class GenericShareDriverTestCase(test.TestCase):
         self.stubs.Set(self._driver.compute_api, 'image_list',
                        mock.Mock(return_value=[fake_image1, fake_image2]))
 
-        result = self._driver._get_service_image()
+        result = self._driver._get_service_image(self._context)
 
         self.assertEqual(result, fake_image1.id)
 
@@ -596,7 +596,8 @@ class GenericShareDriverTestCase(test.TestCase):
                        mock.Mock(return_value=[]))
 
         self.assertRaises(exception.ManilaException,
-                          self._driver._get_service_image)
+                          self._driver._get_service_image,
+                          self._context)
 
     def test_get_service_image_ambiguous(self):
         fake_image = fake_compute.FakeImage(name=CONF.service_image_name)
@@ -604,7 +605,8 @@ class GenericShareDriverTestCase(test.TestCase):
                        mock.Mock(return_value=[fake_image, fake_image]))
 
         self.assertRaises(exception.ManilaException,
-                          self._driver._get_service_image)
+                          self._driver._get_service_image,
+                          self._context)
 
     def test_create_service_instance(self):
         fake_server = fake_compute.FakeServer()
