@@ -397,6 +397,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def _get_service_instance(self, context, share, create=True):
         """Finds or creates and setups service vm."""
         server = self.share_networks_servers.get(share['share_network_id'], {})
+        old_server_ip = server.get('ip', None)
         if server and self._ensure_or_delete_server(context,
                                                     server, update=True):
             return server
@@ -404,7 +405,6 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             service_instance_name = self._get_service_instance_name(share)
             search_opts = {'name': service_instance_name}
             servers = self.compute_api.server_list(context, search_opts, True)
-            old_server_ip = None
             if len(servers) == 1:
                 server = servers[0]
                 old_server_ip = server['ip']
