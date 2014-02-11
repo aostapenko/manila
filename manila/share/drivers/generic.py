@@ -371,10 +371,12 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 if 'could not be found' in str(e):
                     return False
                 raise
-        if server['status'] != 'ACTIVE':
-            self._delete_server(context, server)
-            return False
-        return True
+        if server['status'] == 'ACTIVE':
+            if self._check_server_availability(server):
+                return True
+
+        self._delete_server(context, server)
+        return False
 
     def _delete_server(self, context, server):
         """Deletes the server."""
@@ -402,11 +404,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                     server, update=True):
             return server
         else:
+            server = {}
             service_instance_name = self._get_service_instance_name(share)
             search_opts = {'name': service_instance_name}
             servers = self.compute_api.server_list(context, search_opts, True)
             if len(servers) == 1:
                 server = servers[0]
+                server['ip'] = self._get_server_ip(server)
                 old_server_ip = server['ip']
                 if not self._ensure_or_delete_server(context, server):
                     server.clear()
@@ -519,17 +523,23 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             raise exception.ManilaException('Server waiting timeout')
 
         service_instance['ip'] = self._get_server_ip(service_instance)
+        if not self._check_server_availability(service_instance):
+            raise exception.ManilaException('Server waiting timeout')
+        return service_instance
+
+    def _check_server_availability(self, server):
         t = time.time()
         while time.time() - t < self.configuration.max_time_to_build_instance:
+            LOG.debug('Checking service vm availablity')
             try:
-                socket.socket().connect((service_instance['ip'], 22))
-                return service_instance
+                socket.socket().connect((server['ip'], 22))
+                LOG.debug('Service vm is available via ssh.')
+                return True
             except Exception as e:
                 LOG.debug(e)
                 LOG.debug('Server is not available through ssh. Waiting...')
                 time.sleep(5)
-        else:
-            raise exception.ManilaException('Server waiting timeout')
+        return False
 
     def _setup_network_for_instance(self, context, share, old_server_ip):
         """Setups network for service vm."""
