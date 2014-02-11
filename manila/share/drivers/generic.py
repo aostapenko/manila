@@ -173,7 +173,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 attempts -= 1
                 time.sleep(3)
         else:
-            raise exception.ManilaException('Can\'t receive service tenant id')
+            raise exception.ManilaException('Can not receive '
+                                            'service tenant id')
         self.service_network_id = self._get_service_network()
         self.vif_driver = importutils.\
                 import_class(self.configuration.interface_driver)()
@@ -295,10 +296,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             search_opts['all_tenants'] = True
         volumes_list = self.volume_api.get_all(context, search_opts)
         volume = None
-        if len(volumes_list) > 1:
-            raise exception.ManilaException('Error. Ambigious volumes')
-        elif len(volumes_list) == 1:
+        if len(volumes_list) == 1:
             volume = volumes_list[0]
+        elif len(volumes_list) > 1:
+            raise exception.ManilaException('Error. Ambigious volumes')
         return volume
 
     def _get_volume_snapshot(self, context, snapshot_id):
@@ -308,10 +309,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         volume_snapshot_list = self.volume_api.get_all_snapshots(context,
                                         {'display_name': volume_snapshot_name})
         volume_snapshot = None
-        if len(volume_snapshot_list) > 1:
-            raise exception.ManilaException('Error. Ambigious volume snaphots')
-        elif len(volume_snapshot_list):
+        if len(volume_snapshot_list) == 1:
             volume_snapshot = volume_snapshot_list[0]
+        elif len(volume_snapshot_list) > 1:
+            raise exception.ManilaException('Error. Ambigious volume snaphots')
         return volume_snapshot
 
     @synchronized
@@ -360,60 +361,70 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             LOG.debug(e)
             return None
 
+    def _ensure_or_delete_server(self, context, server, update=False):
+        """Ensures that server exists and active, otherwise deletes it."""
+        if update:
+            try:
+                server.update(self.compute_api.server_get(context,
+                                                          server['id']))
+            except Exception as e:
+                if 'could not be found' in str(e):
+                    return False
+                raise
+        if server['status'] != 'ACTIVE':
+            self._delete_server(context, server)
+            return False
+        return True
+
+    def _delete_server(self, context, server):
+        """Deletes the server."""
+        self.compute_api.server_delete(context, server['id'])
+        t = time.time()
+        while time.time() - t < self.configuration.\
+                                         max_time_to_build_instance:
+            try:
+                server = self.compute_api.server_get(context,
+                                                     server['id'])
+            except Exception as e:
+                if 'could not be found' not in str(e):
+                    raise
+                break
+            time.sleep(1)
+        else:
+            raise exception.ManilaException('Server deletion timeout')
+
     @synchronized
     def _get_service_instance(self, context, share, create=True):
         """Finds or creates and setups service vm."""
-        service_instance_name = self._get_service_instance_name(share)
-        search_opts = {'name': service_instance_name}
-        servers = self.compute_api.server_list(context, search_opts, True)
-        server = new_server = old_server_ip = None
-        if len(servers) > 1:
-            raise exception.ManilaException('Ambigious service instances')
-        elif len(servers) == 1:
-            new_server = servers[0]
-            if new_server['status'] != 'ACTIVE':
-                old_server_ip = self._get_server_ip(new_server)
-                self.compute_api.server_delete(context, new_server['id'])
-                t = time.time()
-                while time.time() - t < self.configuration.\
-                                                 max_time_to_build_instance:
-                    try:
-                        new_server = self.compute_api.server_get(context,
-                                                          new_server['id'])
-                    except Exception as e:
-                        if 'could not be found' not in str(e):
-                            raise
-                        break
-                    time.sleep(1)
-                else:
-                    raise exception.ManilaException('Server deletion timeout')
-                new_server = None
-                servers = []
-            else:
-                server = self.share_networks_servers.get(
-                                            share['share_network_id'], None)
-
-        if not servers:
-            if create:
-                new_server = self._create_service_instance(context,
-                                                 service_instance_name,
-                                                 share, old_server_ip)
-
-        if not server and new_server:
-            new_server['share_network_id'] = share['share_network_id']
-            new_server['ip'] = self._get_server_ip(new_server)
-            new_server['ssh_pool'] = self._get_ssh_pool(new_server)
-            new_server['ssh'] = new_server['ssh_pool'].create()
+        server = self.share_networks_servers.get(share['share_network_id'], {})
+        if server and self._ensure_or_delete_server(context,
+                                                    server, update=True):
+            return server
+        else:
+            service_instance_name = self._get_service_instance_name(share)
+            search_opts = {'name': service_instance_name}
+            servers = self.compute_api.server_list(context, search_opts, True)
+            if len(servers) == 1:
+                server = servers[0]
+                old_server_ip = server['ip']
+                if not self._ensure_or_delete_server(context, server):
+                    server.clear()
+            elif len(servers) > 1:
+                raise exception.ManilaException('Ambigious service instances')
+            if not server and create:
+                server = self._create_service_instance(context,
+                                                       service_instance_name,
+                                                       share, old_server_ip)
+        if server:
+            server['share_network_id'] = share['share_network_id']
+            server['ip'] = self._get_server_ip(server)
+            server['ssh_pool'] = self._get_ssh_pool(server)
+            server['ssh'] = server['ssh_pool'].create()
             for helper in self._helpers.values():
-                helper.init_helper(new_server)
-        elif server and new_server:
-            new_server['share_network_id'] = server['share_network_id']
-            new_server['ip'] = server['ip']
-            new_server['ssh_pool'] = server['ssh_pool']
-            new_server['ssh'] = server['ssh']
+                helper.init_helper(server)
 
-        self.share_networks_servers[share['share_network_id']] = new_server
-        return new_server
+        self.share_networks_servers[share['share_network_id']] = server
+        return server
 
     def _get_ssh_pool(self, server):
         """Returns ssh connection pool for service vm."""
@@ -426,6 +437,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _get_key(self, context):
         """Returns name of key, that will be injected to service vm."""
+        if not self.configuration.path_to_public_key or \
+                not self.configuration.path_to_private_key:
+            return
         if not os.path.exists(self.configuration.path_to_public_key) or \
                 not os.path.exists(self.configuration.path_to_private_key):
             return
@@ -458,20 +472,18 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         """
         images = [image.id for image in self.compute_api.image_list(context)
                   if image.name == self.configuration.service_image_name]
-        if not images:
+        if len(images) == 1:
+            return images[0]
+        elif not images:
             raise exception.ManilaException('No appropriate image was found')
-        elif len(images) > 1:
+        else:
             raise exception.ManilaException('Ambigious image name')
-        return images[0]
 
     def _create_service_instance(self, context, instance_name, share,
                                  old_server_ip):
         """Creates service vm and setups networking for it."""
         service_image_id = self._get_service_image(context)
-        key_name = None
-        if self.configuration.path_to_public_key and self.configuration.\
-                                                           path_to_private_key:
-            key_name = self._get_key(context)
+        key_name = self._get_key(context)
         if not self.configuration.service_instance_password and not key_name:
             raise exception.ManilaException('Neither service instance password'
                                             ' nor key are available')
@@ -508,7 +520,6 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         service_instance['ip'] = self._get_server_ip(service_instance)
         t = time.time()
         while time.time() - t < self.configuration.max_time_to_build_instance:
-            LOG.debug('Checking server availability')
             try:
                 socket.socket().connect((service_instance['ip'], 22))
                 return service_instance
@@ -824,7 +835,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                              access['access_to'])
 
     def deny_access(self, context, share, access):
-        """Allow access to the share."""
+        """Deny access to the share."""
         if not share['share_network_id']:
             return
         server = self._get_service_instance(self.admin_context,
@@ -893,7 +904,7 @@ class NFSHelper(NASHelperBase):
         except Exception as e:
             LOG.error(e)
             if 'command not found' in str(e):
-                raise
+                raise exception.ManilaException('NFS server is not installed')
 
     def remove_export(self, server, share_name):
         """Remove export."""
@@ -936,22 +947,22 @@ class CIFSHelper(NASHelperBase):
         self.test_config = "%s_" % (self.smb_template_config,)
         self.local_configs = {}
 
-    def _create_local_config(self, tenant_id):
+    def _create_local_config(self, share_network_id):
         path, ext = os.path.splitext(self.smb_template_config)
-        local_config = '%s-%s%s' % (path, tenant_id, ext)
-        self.local_configs[tenant_id] = local_config
+        local_config = '%s-%s%s' % (path, share_network_id, ext)
+        self.local_configs[share_network_id] = local_config
         shutil.copy(self.smb_template_config, local_config)
         return local_config
 
-    def _get_local_config(self, tenant_id):
-        local_config = self.local_configs.get(tenant_id, None)
+    def _get_local_config(self, share_network_id):
+        local_config = self.local_configs.get(share_network_id, None)
         if local_config is None:
-            local_config = self._create_local_config(tenant_id)
+            local_config = self._create_local_config(share_network_id)
         return local_config
 
     def init_helper(self, server):
         self._recreate_template_config()
-        local_config = self._create_local_config(server['tenant_id'])
+        local_config = self._create_local_config(server['share_network_id'])
         try:
             _ssh_exec(server, ['sudo', 'mkdir',
                                os.path.dirname(self.config_path)])
@@ -985,7 +996,7 @@ class CIFSHelper(NASHelperBase):
         """Create new export, delete old one if exists."""
         local_path = os.path.join(self.configuration.share_mount_path,
                                   share_name)
-        config = self._get_local_config(server['tenant_id'])
+        config = self._get_local_config(server['share_network_id'])
         parser = ConfigParser.ConfigParser()
         parser.read(config)
         #delete old one
@@ -1012,7 +1023,7 @@ class CIFSHelper(NASHelperBase):
     def remove_export(self, server, share_name):
         """Remove export."""
         try:
-            config = self._get_local_config(server['tenant_id'])
+            config = self._get_local_config(server['share_network_id'])
         except Exception as e:
             LOG.debug(e)
         else:
@@ -1037,7 +1048,7 @@ class CIFSHelper(NASHelperBase):
         if access_type != 'ip':
             reason = 'only ip access type allowed'
             raise exception.InvalidShareAccess(reason)
-        config = self._get_local_config(server['tenant_id'])
+        config = self._get_local_config(server['share_network_id'])
         parser = ConfigParser.ConfigParser()
         parser.read(config)
 
@@ -1055,7 +1066,7 @@ class CIFSHelper(NASHelperBase):
     def deny_access(self, server, share_name, access_type, access,
                     force=False):
         """Deny access to the host."""
-        config = self._get_local_config(server['tenant_id'])
+        config = self._get_local_config(server['share_network_id'])
         parser = ConfigParser.ConfigParser()
         try:
             parser.read(config)
