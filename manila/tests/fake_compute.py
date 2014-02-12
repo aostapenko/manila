@@ -39,6 +39,12 @@ class FakeServer(object):
     def __setitem__(self, attr, value):
         setattr(self, attr, value)
 
+    def get(self, attr, default):
+        return getattr(self, attr, default)
+
+    def update(self, *args, **kwargs):
+        pass
+
 
 class FakeKeypair(object):
     def __init__(self, **kwargs):
