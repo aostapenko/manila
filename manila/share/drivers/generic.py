@@ -96,10 +96,10 @@ share_opts = [
                help="Path to smb config in service instance"),
     cfg.StrOpt('service_network_name',
                default='manila_service_network',
-               help="Name of manila serivce network"),
+               help="Name of manila service network"),
     cfg.StrOpt('service_network_cidr',
                default='10.254.0.0/16',
-               help="Name of manila serivce network"),
+               help="CIDR of manila service network"),
     cfg.StrOpt('interface_driver',
                default='manila.network.linux.interface.OVSInterfaceDriver',
                help="Vif driver"),
@@ -156,7 +156,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         pass
 
     def do_setup(self, context):
-        """Any initialization the volume driver does while starting."""
+        """Any initialization the generic driver does while starting."""
         super(GenericShareDriver, self).do_setup(context)
         self.compute_api = compute.API()
         self.volume_api = volume.API()
@@ -188,7 +188,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                     get_all_tenant_networks(self.service_tenant_id)
                     if network['name'] == service_network_name]
         if len(networks) > 1:
-            raise exception.ManilaException('Ambigious service networks')
+            raise exception.ManilaException('Ambiguous service networks')
         elif not networks:
             return self.neutron_api.network_create(self.service_tenant_id,
                                               service_network_name)['id']
@@ -219,7 +219,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         return location
 
     def _format_device(self, server, volume):
-        """Formats attached to service vm device."""
+        """Formats device attached to the service vm."""
         command = ['sudo', 'mkfs.ext4', volume['mountpoint']]
         _ssh_exec(server, command)
 
@@ -299,7 +299,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if len(volumes_list) == 1:
             volume = volumes_list[0]
         elif len(volumes_list) > 1:
-            raise exception.ManilaException('Error. Ambigious volumes')
+            raise exception.ManilaException('Error. Ambiguous volumes')
         return volume
 
     def _get_volume_snapshot(self, context, snapshot_id):
@@ -312,7 +312,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if len(volume_snapshot_list) == 1:
             volume_snapshot = volume_snapshot_list[0]
         elif len(volume_snapshot_list) > 1:
-            raise exception.ManilaException('Error. Ambigious volume snaphots')
+            raise exception.ManilaException('Error. Ambiguous volume snaphots')
         return volume_snapshot
 
     @synchronized
@@ -415,7 +415,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 if not self._ensure_or_delete_server(context, server):
                     server.clear()
             elif len(servers) > 1:
-                raise exception.ManilaException('Ambigious service instances')
+                raise exception.ManilaException('Ambiguous service instances')
             if not server and create:
                 server = self._create_service_instance(context,
                                                        service_instance_name,
@@ -452,7 +452,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         keypairs = [k for k in self.compute_api.keypair_list(context)
                     if k.name == keypair_name]
         if len(keypairs) > 1:
-            raise exception.ManilaException('Ambigious keypairs')
+            raise exception.ManilaException('Ambiguous keypairs')
 
         public_key, _ = self._execute('cat',
                                       self.configuration.path_to_public_key,
@@ -482,11 +482,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         elif not images:
             raise exception.ManilaException('No appropriate image was found')
         else:
-            raise exception.ManilaException('Ambigious image name')
+            raise exception.ManilaException('Ambiguous image name')
 
     def _create_service_instance(self, context, instance_name, share,
                                  old_server_ip):
-        """Creates service vm and setups networking for it."""
+        """Creates service vm and sets up networking for it."""
         service_image_id = self._get_service_image(context)
         key_name = self._get_key(context)
         if not self.configuration.service_instance_password and not key_name:
@@ -512,7 +512,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 break
             if service_instance['status'] == 'ERROR':
                 raise exception.\
-                        ManilaException('Service instance creating error')
+                    ManilaException('Service vm came to error state while '
+                                    'creating')
             time.sleep(1)
             try:
                 service_instance = self.compute_api.server_get(context,
@@ -549,7 +550,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         service_subnets = [subnet for subnet in all_service_subnets
                            if subnet['name'] == share['share_network_id']]
         if len(service_subnets) > 1:
-            raise exception.ManilaException('Ambigious subnets')
+            raise exception.ManilaException('Ambiguous subnets')
         elif not service_subnets:
             service_subnet = \
                     self.neutron_api.subnet_create(self.service_tenant_id,
@@ -599,7 +600,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _setup_connectivity_with_service_instances(self):
         """Setups connectivity with service instances by creating port
-        in service network, creating and setuping required network devices.
+        in service network, creating and setting up required network devices.
         """
         port = self._setup_service_port()
         interface_name = self.vif_driver.get_device_name(port)
@@ -647,7 +648,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         ports = [port for port in self.neutron_api.
                  list_ports(device_id='manila-share')]
         if len(ports) > 1:
-            raise exception.ManilaException('Error. Ambigious service ports')
+            raise exception.ManilaException('Error. Ambiguous service ports')
         elif not ports:
             services = self.db.service_get_all_by_topic(self.admin_context,
                                                         'manila-share')
