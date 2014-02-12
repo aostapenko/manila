@@ -125,7 +125,8 @@ def synchronized(f):
             if share_network_id:
                 break
         else:
-            raise exception.ManilaException('Could not get share network id')
+            raise exception.\
+                        ManilaException(_('Could not get share network id'))
         with self.share_networks_locks.setdefault(share_network_id,
                                                         threading.RLock()):
             return f(self, *args, **kwargs)
@@ -168,13 +169,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             try:
                 self.service_tenant_id = self.neutron_api.admin_tenant_id
                 break
-            except Exception as e:
-                LOG.debug(e)
+            except exception.NetworkException:
+                LOG.debug(_('Connection to neutron failed'))
                 attempts -= 1
                 time.sleep(3)
         else:
-            raise exception.ManilaException('Can not receive '
-                                            'service tenant id')
+            raise exception.\
+                    ManilaException(_('Can not receive service tenant id'))
         self.service_network_id = self._get_service_network()
         self.vif_driver = importutils.\
                 import_class(self.configuration.interface_driver)()
@@ -188,7 +189,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                     get_all_tenant_networks(self.service_tenant_id)
                     if network['name'] == service_network_name]
         if len(networks) > 1:
-            raise exception.ManilaException('Ambiguous service networks')
+            raise exception.ManilaException(_('Ambiguous service networks'))
         elif not networks:
             return self.neutron_api.network_create(self.service_tenant_id,
                                               service_network_name)['id']
@@ -208,7 +209,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def create_share(self, context, share):
         """Creates share."""
         if share['share_network_id'] is None:
-            raise exception.ManilaException('Share Network is not specified')
+            raise exception.\
+                    ManilaException(_('Share Network is not specified'))
         server = self._get_service_instance(self.admin_context, share)
         volume = self._allocate_container(context, share)
         volume = self._attach_volume(context, share, server, volume)
@@ -230,10 +232,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         command.extend(['sudo', 'mount', volume['mountpoint'], mount_path])
         try:
             _ssh_exec(server, command)
-        except Exception as e:
-            LOG.debug(e)
-            if 'already mounted' not in str(e):
+        except exception.ProcessExecutionError as e:
+            if 'already mounted' not in e.stderr:
                 raise
+            LOG.debug(_('Share %s is already mounted') % share['name'])
         command = ['sudo', 'chmod', '777', mount_path]
         _ssh_exec(server, command)
 
@@ -244,8 +246,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         command.extend(['sudo', 'rmdir', mount_path])
         try:
             _ssh_exec(server, command)
-        except Exception as e:
-            LOG.debug(e)
+        except exception.ProcessExecutionError as e:
+            if 'not found' in e.stderr:
+                LOG.debug(_('%s is not mounted') % share['name'])
 
     def _get_mount_path(self, share):
         """
@@ -263,17 +266,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             if volume['id'] in attached_volumes:
                 return volume
             else:
-                raise exception.ManilaException('Volume is already attached '
-                                                'to another instance')
+                raise exception.ManilaException(_('Volume is already attached '
+                                                  'to another instance'))
         device_path = self._get_device_path(self.admin_context, server)
-        try:
-            self.compute_api.instance_volume_attach(self.admin_context,
-                                                    server['id'],
-                                                    volume['id'],
-                                                    device_path)
-        except Exception as e:
-            LOG.debug(e)
-            raise
+        self.compute_api.instance_volume_attach(self.admin_context,
+                                                server['id'],
+                                                volume['id'],
+                                                device_path)
 
         t = time.time()
         while time.time() - t < self.configuration.max_time_to_attach:
@@ -281,10 +280,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             if volume['status'] == 'in-use':
                 break
             if volume['status'] == 'error':
-                raise exception.ManilaException('Volume error')
+                raise exception.ManilaException(_('Volume error'))
             time.sleep(1)
         else:
-            raise exception.ManilaException('Volume attach timeout')
+            raise exception.ManilaException(_('Volume attach timeout'))
 
         return volume
 
@@ -299,7 +298,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if len(volumes_list) == 1:
             volume = volumes_list[0]
         elif len(volumes_list) > 1:
-            raise exception.ManilaException('Error. Ambiguous volumes')
+            raise exception.ManilaException(_('Error. Ambiguous volumes'))
         return volume
 
     def _get_volume_snapshot(self, context, snapshot_id):
@@ -312,7 +311,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if len(volume_snapshot_list) == 1:
             volume_snapshot = volume_snapshot_list[0]
         elif len(volume_snapshot_list) > 1:
-            raise exception.ManilaException('Error. Ambiguous volume snaphots')
+            raise exception.\
+                    ManilaException(_('Error. Ambiguous volume snaphots'))
         return volume_snapshot
 
     @synchronized
@@ -333,7 +333,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                     break
                 time.sleep(1)
             else:
-                raise exception.ManilaException('Volume detach timeout')
+                raise exception.ManilaException(_('Volume detach timeout'))
 
     def _get_device_path(self, context, server):
         """Returns device path, that will be used for cinder volume attaching.
@@ -354,12 +354,17 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def _get_server_ip(self, server):
         """Returns service vms ip address."""
+        net = server['networks']
         try:
-            net = server['networks'][self.configuration.service_network_name]
-            return net[0]
-        except Exception as e:
-            LOG.debug(e)
-            return None
+            net_ips = net[self.configuration.service_network_name]
+            return net_ips[0]
+        except KeyError:
+            msg = _('Service vm is not attached to %s network')
+        except IndexError:
+            msg = _('Service vm has no ips on %s network')
+        msg = msg % self.configuration.service_network_name
+        LOG.debug(msg)
+        raise exception.ManilaException(msg)
 
     def _ensure_or_delete_server(self, context, server, update=False):
         """Ensures that server exists and active, otherwise deletes it."""
@@ -367,10 +372,9 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             try:
                 server.update(self.compute_api.server_get(context,
                                                           server['id']))
-            except Exception as e:
-                if 'could not be found' in str(e):
-                    return False
-                raise
+            except exception.InstanceNotFound as e:
+                LOG.debub(e)
+                return False
         if server['status'] == 'ACTIVE':
             if self._check_server_availability(server):
                 return True
@@ -387,13 +391,12 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             try:
                 server = self.compute_api.server_get(context,
                                                      server['id'])
-            except Exception as e:
-                if 'could not be found' not in str(e):
-                    raise
+            except exception.InstanceNotFound:
+                LOG.debug(_('Service instance deletion is successful'))
                 break
             time.sleep(1)
         else:
-            raise exception.ManilaException('Server deletion timeout')
+            raise exception.ManilaException(_('Server deletion timeout'))
 
     @synchronized
     def _get_service_instance(self, context, share, create=True):
@@ -401,7 +404,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         server = self.share_networks_servers.get(share['share_network_id'], {})
         old_server_ip = server.get('ip', None)
         if server and self._ensure_or_delete_server(context,
-                                                    server, update=True):
+                                                    server,
+                                                    update=True):
             return server
         else:
             server = {}
@@ -415,7 +419,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 if not self._ensure_or_delete_server(context, server):
                     server.clear()
             elif len(servers) > 1:
-                raise exception.ManilaException('Ambiguous service instances')
+                raise exception.\
+                        ManilaException(_('Ambiguous service instances'))
             if not server and create:
                 server = self._create_service_instance(context,
                                                        service_instance_name,
@@ -452,7 +457,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         keypairs = [k for k in self.compute_api.keypair_list(context)
                     if k.name == keypair_name]
         if len(keypairs) > 1:
-            raise exception.ManilaException('Ambiguous keypairs')
+            raise exception.ManilaException(_('Ambiguous keypairs'))
 
         public_key, _ = self._execute('cat',
                                       self.configuration.path_to_public_key,
@@ -480,9 +485,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if len(images) == 1:
             return images[0]
         elif not images:
-            raise exception.ManilaException('No appropriate image was found')
+            raise exception.\
+                    ManilaException(_('No appropriate image was found'))
         else:
-            raise exception.ManilaException('Ambiguous image name')
+            raise exception.ManilaException(_('Ambiguous image name'))
 
     def _create_service_instance(self, context, instance_name, share,
                                  old_server_ip):
@@ -490,8 +496,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         service_image_id = self._get_service_image(context)
         key_name = self._get_key(context)
         if not self.configuration.service_instance_password and not key_name:
-            raise exception.ManilaException('Neither service instance password'
-                                            ' nor key are available')
+            raise exception.ManilaException(_('Neither service instance'
+                                             'password nor key are available'))
 
         port = self._setup_network_for_instance(context, share, old_server_ip)
         try:
@@ -511,14 +517,13 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             if service_instance['status'] == 'ACTIVE':
                 break
             if service_instance['status'] == 'ERROR':
-                raise exception.\
-                    ManilaException('Service vm came to error state while '
-                                    'creating')
+                raise exception.ManilaException(_('Service vm came to error '
+                                                  'state while creating'))
             time.sleep(1)
             try:
                 service_instance = self.compute_api.server_get(context,
                                     service_instance['id'])
-            except Exception as e:
+            except exception.InstanceNotFound as e:
                 LOG.debug(e)
         else:
             raise exception.ManilaException('Server waiting timeout')
@@ -536,7 +541,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 socket.socket().connect((server['ip'], 22))
                 LOG.debug('Service vm is available via ssh.')
                 return True
-            except Exception as e:
+            except socket.error as e:
                 LOG.debug(e)
                 LOG.debug('Server is not available through ssh. Waiting...')
                 time.sleep(5)
@@ -566,10 +571,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         try:
             self.neutron_api.router_add_interface(private_router['id'],
                                                   service_subnet['id'])
-        except Exception as e:
-            LOG.debug(e)
-            if 'already has' not in str(e):
+        except exception.NetworkException as e:
+            if 'already has' not in e.msg:
                 raise
+            LOG.debug(_('Subnet %s is already attached to the router %s') %
+                        (service_subnet['id'], private_router['id']))
 
         return self.neutron_api.create_port(self.service_tenant_id,
                                             self.service_network_id,
@@ -707,11 +713,11 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             if volume['status'] == 'available':
                 break
             if volume['status'] == 'error':
-                raise exception.ManilaException('Volume creating error')
+                raise exception.ManilaException(_('Volume creating error'))
             time.sleep(1)
             volume = self.volume_api.get(context, volume['id'])
         else:
-            raise exception.ManilaException('Volume creating timeout')
+            raise exception.ManilaException(_('Volume creating timeout'))
 
         return volume
 
@@ -725,13 +731,12 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                                                     max_time_to_create_volume:
                 try:
                     volume = self.volume_api.get(context, volume['id'])
-                except Exception as e:
-                    if 'could not be found' not in str(e):
-                        raise
+                except exception.VolumeNotFound:
+                    LOG.debug(_('Volume deletion is successful'))
                     break
                 time.sleep(1)
             else:
-                raise exception.ManilaException('Volume deletion error')
+                raise exception.ManilaException(_('Volume deletion timeout'))
 
     def get_share_stats(self, refresh=False):
         """Get share status.
@@ -818,9 +823,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             try:
                 snapshot = self.volume_api.get_snapshot(context,
                                                         volume_snapshot['id'])
-            except Exception as e:
-                if 'could not be found' not in str(e):
-                    raise
+            except exception.VolumeSnapshotNotFound:
+                LOG.debug(_('Volume snapshot deletion is successful'))
                 break
             time.sleep(1)
         else:
@@ -913,10 +917,11 @@ class NFSHelper(NASHelperBase):
     def init_helper(self, server):
         try:
             _ssh_exec(server, ['sudo', 'exportfs'])
-        except Exception as e:
-            LOG.error(e)
-            if 'command not found' in str(e):
-                raise exception.ManilaException('NFS server is not installed')
+        except exception.ProcessExecutionError as e:
+            if 'command not found' in e.stderr:
+                raise exception.ManilaException(
+                    _('NFS server is not installed on %s') % server['id'])
+            LOG.error(e.stderr)
 
     def remove_export(self, server, share_name):
         """Remove export."""
@@ -975,31 +980,24 @@ class CIFSHelper(NASHelperBase):
     def init_helper(self, server):
         self._recreate_template_config()
         local_config = self._create_local_config(server['share_network_id'])
+        config_dir = os.path.dirname(self.config_path)
         try:
             _ssh_exec(server, ['sudo', 'mkdir',
-                               os.path.dirname(self.config_path)])
-        except Exception as e:
-            LOG.debug(e)
-            if 'File exists' not in str(e):
+                               config_dir])
+        except exception.ProcessExecutionError as e:
+            if 'File exists' not in e.stderr:
                 raise
-        try:
-            _ssh_exec(server, ['sudo', 'chown',
-                               self.configuration.service_instance_user,
-                               os.path.dirname(self.config_path)])
-        except Exception as e:
-            LOG.debug(e)
-            raise
-        try:
-            _ssh_exec(server, ['touch', self.config_path])
-        except Exception as e:
-            LOG.debug(e)
-            raise
+            LOG.debug(_('Directory %s is already exists') % config_dir)
+        _ssh_exec(server, ['sudo', 'chown',
+                           self.configuration.service_instance_user,
+                           config_dir])
+        _ssh_exec(server, ['touch', self.config_path])
         try:
             _ssh_exec(server, ['sudo', 'stop', 'smbd'])
-        except Exception as e:
-            LOG.debug(e)
-            if 'Unknown instance' not in str(e):
+        except exception.ProcessExecutionError as e:
+            if 'Unknown instance' not in e.stderr:
                 raise
+            LOG.debug(_('Samba service is not running'))
         self._write_remote_config(local_config, server)
         _ssh_exec(server, ['sudo', 'smbd', '-s', self.config_path])
         self._restart_service(server)
@@ -1034,18 +1032,14 @@ class CIFSHelper(NASHelperBase):
 
     def remove_export(self, server, share_name):
         """Remove export."""
-        try:
-            config = self._get_local_config(server['share_network_id'])
-        except Exception as e:
-            LOG.debug(e)
-        else:
-            parser = ConfigParser.ConfigParser()
-            parser.read(config)
-            #delete old one
-            if parser.has_section(share_name):
-                parser.remove_section(share_name)
-            self._update_config(parser, config)
-            self._write_remote_config(config, server)
+        config = self._get_local_config(server['share_network_id'])
+        parser = ConfigParser.ConfigParser()
+        parser.read(config)
+        #delete old one
+        if parser.has_section(share_name):
+            parser.remove_section(share_name)
+        self._update_config(parser, config)
+        self._write_remote_config(config, server)
         _ssh_exec(server, ['sudo', 'smbcontrol', 'all', 'close-share',
                        share_name])
 
