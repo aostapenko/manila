@@ -29,7 +29,7 @@ class FakeServer(object):
     def __init__(self, **kwargs):
         self.id = kwargs.pop('id', 'fake_id')
         self.status = kwargs.pop('status', 'ACTIVE')
-        self.networks = kwargs.pop('networks', None)
+        self.networks = kwargs.pop('networks', {})
         for key, value in kwargs.items():
             setattr(self, key, value)
 

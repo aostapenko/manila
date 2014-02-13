@@ -53,7 +53,6 @@ share_opts = [
                default='manila_service_instance-%s',
                help="Name of service instance"),
     cfg.StrOpt('service_instance_user',
-               default='ubuntu',
                help="User in service instance"),
     cfg.StrOpt('service_instance_password',
                default=None,
@@ -373,7 +372,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
                 server.update(self.compute_api.server_get(context,
                                                           server['id']))
             except exception.InstanceNotFound as e:
-                LOG.debub(e)
+                LOG.debug(e)
                 return False
         if server['status'] == 'ACTIVE':
             if self._check_server_availability(server):
@@ -574,8 +573,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         except exception.NetworkException as e:
             if 'already has' not in e.msg:
                 raise
-            LOG.debug(_('Subnet %s is already attached to the router %s') %
-                        (service_subnet['id'], private_router['id']))
+            LOG.debug(_('Subnet %(subnet_id)s is already attached to the '
+                        'router %(router_id)s') %
+                                    {'subnet_id': service_subnet['id'],
+                                     'router_id': private_router['id']})
 
         return self.neutron_api.create_port(self.service_tenant_id,
                                             self.service_network_id,

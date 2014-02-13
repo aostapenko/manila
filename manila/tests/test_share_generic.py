@@ -224,7 +224,8 @@ class GenericShareDriverTestCase(test.TestCase):
 
     def test_mount_device_exception_01(self):
         volume = {'mountpoint': 'fake_mount_point'}
-        generic._ssh_exec.side_effect = [Exception('already mounted'), None]
+        generic._ssh_exec.side_effect = [
+               exception.ProcessExecutionError(stderr='already mounted'), None]
         self.stubs.Set(self._driver, '_get_mount_path',
                 mock.Mock(return_value='fake_mount_path'))
 
@@ -457,17 +458,17 @@ class GenericShareDriverTestCase(test.TestCase):
         self.assertEqual(result,
                 fake_server['networks'][CONF.service_network_name][0])
 
-    def test_get_server_ip_none(self):
-        fake_server = fake_compute.FakeServer()
-
-        result = self._driver._get_server_ip(fake_server)
-
-        self.assertEqual(result, None)
+    def test_get_server_ip_exception(self):
+        fake_server = fake_compute.FakeServer(networks={})
+        self.assertRaises(exception.ManilaException,
+                          self._driver._get_server_ip, fake_server)
 
     def test_get_service_instance(self):
         fake_server = fake_compute.FakeServer()
         self.stubs.Set(self._driver, '_ensure_or_delete_server',
                        mock.Mock(return_value=True))
+        self.stubs.Set(self._driver, '_get_server_ip',
+                       mock.Mock(return_value='fake_ip'))
         self.stubs.Set(self._driver.compute_api, 'server_list',
                        mock.Mock(return_value=[]))
         self.stubs.Set(self._driver, '_create_service_instance',
@@ -480,6 +481,7 @@ class GenericShareDriverTestCase(test.TestCase):
         self.assertFalse(self._driver._ensure_or_delete_server.called)
         self._driver._get_ssh_pool.assert_called_once_with(fake_server)
         self._driver.compute_api.server_list.assert_called_once()
+        self._driver._get_server_ip.assert_called_once()
         self._driver._create_service_instance.assert_called_once()
         self.assertEqual(result, fake_server)
 
@@ -512,6 +514,8 @@ class GenericShareDriverTestCase(test.TestCase):
                                                old_fake_server}
         self.stubs.Set(self._driver, '_ensure_or_delete_server',
                 mock.Mock(return_value=False))
+        self.stubs.Set(self._driver, '_get_server_ip',
+                       mock.Mock(return_value='fake_ip'))
         self.stubs.Set(self._driver.compute_api, 'server_list',
                        mock.Mock(return_value=[]))
         self.stubs.Set(self._driver, '_create_service_instance',
@@ -525,6 +529,7 @@ class GenericShareDriverTestCase(test.TestCase):
                 [mock.call(self._context, old_fake_server, update=True)])
         self._driver._get_ssh_pool.assert_called_once_with(new_fake_server)
         self._driver.compute_api.server_list.assert_called_once()
+        self._driver._get_server_ip.assert_called_once()
         self._driver._create_service_instance.assert_called_once()
 
         self.assertEqual(result, new_fake_server)
@@ -533,6 +538,8 @@ class GenericShareDriverTestCase(test.TestCase):
         fake_server = fake_compute.FakeServer()
         self.stubs.Set(self._driver, '_ensure_or_delete_server',
                        mock.Mock(return_value=True))
+        self.stubs.Set(self._driver, '_get_server_ip',
+                       mock.Mock(return_value='fake_ip'))
         self.stubs.Set(self._driver.compute_api, 'server_list',
                        mock.Mock(return_value=[fake_server]))
         self.stubs.Set(self._driver, '_create_service_instance',
@@ -545,6 +552,7 @@ class GenericShareDriverTestCase(test.TestCase):
         self._driver._ensure_or_delete_server.assert_called_once()
         self._driver._get_ssh_pool.assert_called_once_with(fake_server)
         self._driver.compute_api.server_list.assert_called_once()
+        self._driver._get_server_ip.assert_called_once()
         self.assertFalse(self._driver._create_service_instance.called)
         self.assertEqual(result, fake_server)
 
@@ -568,8 +576,8 @@ class GenericShareDriverTestCase(test.TestCase):
         self.stubs.Set(self._driver, '_check_server_availability',
                        mock.Mock(return_value=True))
         self.stubs.Set(self._driver.compute_api, 'server_get',
-                       mock.Mock(side_effect=exception.ManilaException(
-                                                      'could not be found')))
+                       mock.Mock(side_effect=exception.InstanceNotFound(
+                                               instance_id=fake_server['id'])))
         result = self._driver._ensure_or_delete_server(self._context,
                                                        fake_server,
                                                        update=True)
@@ -698,6 +706,8 @@ class GenericShareDriverTestCase(test.TestCase):
                        mock.Mock())
         self.stubs.Set(self._driver.compute_api, 'server_create',
                        mock.Mock(return_value=fake_server))
+        self.stubs.Set(self._driver, '_get_server_ip',
+                       mock.Mock(return_value='fake_ip'))
         self.stubs.Set(generic.socket, 'socket', mock.Mock())
 
         result = self._driver._create_service_instance(self._context,
@@ -1015,8 +1025,8 @@ class GenericShareDriverTestCase(test.TestCase):
         self.stubs.Set(self._driver, '_get_volume',
                        mock.Mock(return_value=fake_vol))
         self.stubs.Set(self._driver.volume_api, 'delete', mock.Mock())
-        self.stubs.Set(self._driver.volume_api, 'get',
-                       mock.Mock(side_effect=Exception('could not be found')))
+        self.stubs.Set(self._driver.volume_api, 'get', mock.Mock(
+               side_effect=exception.VolumeNotFound(volume_id=fake_vol['id'])))
 
         self._driver._deallocate_container(self._context, self.share)
 
@@ -1076,7 +1086,8 @@ class GenericShareDriverTestCase(test.TestCase):
                        mock.Mock(return_value=fake_vol_snap))
         self.stubs.Set(self._driver.volume_api, 'delete_snapshot', mock.Mock())
         self.stubs.Set(self._driver.volume_api, 'get_snapshot',
-                    mock.Mock(side_effect=Exception('could not be found')))
+                mock.Mock(side_effect=exception.VolumeSnapshotNotFound(
+                    snapshot_id=fake_vol_snap['id'])))
 
         self._driver.delete_snapshot(self._context, fake_vol_snap)
 
