@@ -93,8 +93,8 @@ def synchronized(f):
         else:
             raise exception.\
                         ManilaException(_('Could not get share network id'))
-        with self.servers_locks.setdefault(share_network_id,
-                                           threading.RLock()):
+        with self.share_networks_locks.setdefault(share_network_id,
+                                                  threading.RLock()):
             return f(self, *args, **kwargs)
     return wrapped_func
 
@@ -108,6 +108,7 @@ def _ssh_exec(server, command):
 
 
 class InstanceManager(object):
+    """Manages nova instances for various share drivers."""
 
     def __init__(self, db, _helpers, *args, **kwargs):
         """Do initialization."""
@@ -116,7 +117,7 @@ class InstanceManager(object):
             raise exception.ManilaException(_('Service instance user is not '
                                               'specified'))
         self.admin_context = context.get_admin_context()
-        self._execute = utils.execute 
+        self._execute = utils.execute
         self.compute_api = compute.API()
         self.neutron_api = neutron.API()
         self._helpers = _helpers
@@ -133,7 +134,7 @@ class InstanceManager(object):
         else:
             raise exception.\
                     ManilaException(_('Can not receive service tenant id'))
-        self.servers_locks = {}
+        self.share_networks_locks = {}
         self.share_networks_servers = {}
         self.service_network_id = self._get_service_network()
         self.vif_driver = importutils.\
@@ -193,8 +194,7 @@ class InstanceManager(object):
         """Deletes the server."""
         self.compute_api.server_delete(context, server['id'])
         t = time.time()
-        while time.time() - t < CONF.\
-                                         max_time_to_build_instance:
+        while time.time() - t < CONF.max_time_to_build_instance:
             try:
                 server = self.compute_api.server_get(context,
                                                      server['id'])
@@ -205,7 +205,7 @@ class InstanceManager(object):
         else:
             raise exception.ManilaException(_('Instance have not been deleted '
                                               'in %ss. Giving up') %
-                                 CONF.max_time_to_build_instance)
+                                              CONF.max_time_to_build_instance)
 
     @synchronized
     def get_service_instance(self, context, share, create=True):
@@ -256,8 +256,7 @@ class InstanceManager(object):
 
     def _get_key(self, context):
         """Returns name of key, that will be injected to service vm."""
-        if not CONF.path_to_public_key or \
-                not CONF.path_to_private_key:
+        if not CONF.path_to_public_key or not CONF.path_to_private_key:
             return
         if not os.path.exists(CONF.path_to_public_key) or \
                 not os.path.exists(CONF.path_to_private_key):
@@ -331,7 +330,7 @@ class InstanceManager(object):
             time.sleep(1)
             try:
                 service_instance = self.compute_api.server_get(context,
-                                    service_instance['id'])
+                                                        service_instance['id'])
             except exception.InstanceNotFound as e:
                 LOG.debug(e)
         else:
