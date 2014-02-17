@@ -29,7 +29,6 @@ from manila import exception
 from manila.openstack.common import importutils
 from manila.openstack.common import log as logging
 from manila.share import driver
-from manila import utils
 from manila import volume
 from manila.share.drivers import instance
 
@@ -73,6 +72,7 @@ share_opts = [
 
 CONF = cfg.CONF
 CONF.register_opts(share_opts)
+
 _ssh_exec = instance._ssh_exec
 synchronized = instance.synchronized
 
@@ -102,7 +102,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         self.instance_manager = instance.InstanceManager(self.db,
                                                          self._helpers)
         self.get_service_instance = self.instance_manager.get_service_instance
-        self.servers_locks = self.instance_manager.servers_locks
+        self.share_networks_locks = self.instance_manager.share_networks_locks
         self.share_networks_servers = self.instance_manager.\
                                                         share_networks_servers
         self._setup_helpers()
@@ -114,7 +114,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
             helper = importutils.import_class(import_str)
             self._helpers[share_proto.upper()] = helper(self._execute,
                                                     self.configuration,
-                                                    self.servers_locks)
+                                                    self.share_networks_locks)
 
     def create_share(self, context, share):
         """Creates share."""
@@ -454,7 +454,7 @@ class NASHelperBase(object):
     def __init__(self, execute, config_object, locks):
         self.configuration = config_object
         self._execute = execute
-        self.servers_locks = locks
+        self.share_networks_locks = locks
 
     def init_helper(self, server):
         pass
