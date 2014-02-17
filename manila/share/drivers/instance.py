@@ -478,7 +478,7 @@ class InstanceManager(object):
             port = self.neutron_api.create_port(self.service_tenant_id,
                                        self.service_network_id,
                                        device_id='manila-share',
-                                       device_owner='manila:generic_driver',
+                                       device_owner='manila:share',
                                        host_id=host)
         else:
             port = ports[0]
