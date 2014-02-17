@@ -29,8 +29,8 @@ from manila import exception
 from manila.openstack.common import importutils
 from manila.openstack.common import log as logging
 from manila.share import driver
-from manila import volume
 from manila.share.drivers import instance
+from manila import volume
 
 from oslo.config import cfg
 
