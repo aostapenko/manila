@@ -36,7 +36,7 @@ from oslo.config import cfg
 
 LOG = logging.getLogger(__name__)
 
-share_opts = [
+server_opts = [
     cfg.StrOpt('service_image_name',
                default='manila-service-image',
                help="Name of image in glance, that will be used to create "
@@ -78,7 +78,7 @@ share_opts = [
 ]
 
 CONF = cfg.CONF
-CONF.register_opts(share_opts)
+CONF.register_opts(server_opts)
 
 
 def synchronized(f):
@@ -157,8 +157,7 @@ class InstanceManager(object):
 
     def _get_service_instance_name(self, share):
         """Returns service vms name."""
-        return CONF.service_instance_name_template % \
-                    share['share_network_id']
+        return CONF.service_instance_name_template % share['share_network_id']
 
     def _get_server_ip(self, server):
         """Returns service vms ip address."""
@@ -248,10 +247,10 @@ class InstanceManager(object):
     def _get_ssh_pool(self, server):
         """Returns ssh connection pool for service vm."""
         ssh_pool = utils.SSHPool(server['ip'], 22, None,
-                         CONF.service_instance_user,
-                         password=CONF.service_instance_password,
-                         privatekey=CONF.path_to_private_key,
-                         max_size=1)
+                                 CONF.service_instance_user,
+                                 password=CONF.service_instance_password,
+                                 privatekey=CONF.path_to_private_key,
+                                 max_size=1)
         return ssh_pool
 
     def _get_key(self, context):
@@ -336,13 +335,13 @@ class InstanceManager(object):
         else:
             raise exception.ManilaException(_('Instance have not been spawned '
                                               'in %ss. Giving up') %
-                                 CONF.max_time_to_build_instance)
+                                              CONF.max_time_to_build_instance)
 
         service_instance['ip'] = self._get_server_ip(service_instance)
         if not self._check_server_availability(service_instance):
             raise exception.ManilaException(_('SSH connection have not been '
                                               'established in %ss. Giving up')
-                              % CONF.max_time_to_build_instance)
+                                             % CONF.max_time_to_build_instance)
         return service_instance
 
     def _check_server_availability(self, server):
