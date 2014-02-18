@@ -90,9 +90,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def check_for_setup_error(self):
         """Returns an error if prerequisites aren't met."""
-        if not self.configuration.service_instance_user:
-            raise exception.ManilaException(_('Service instance user is not '
-                                              'specified'))
+        pass
 
     def do_setup(self, context):
         """Any initialization the generic driver does while starting."""

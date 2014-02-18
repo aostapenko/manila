@@ -543,7 +543,8 @@ class InstanceManagerTestCase(test.TestCase):
                 mock.Mock(return_value='fake_interface_name'))
         self.stubs.Set(self._manager.neutron_api, 'get_subnet',
                 mock.Mock(return_value=fake_subnet))
-        self.stubs.Set(self._manager, '_clean_garbage', mock.Mock())
+        self.stubs.Set(self._manager, '_remove_outdated_interfaces',
+                       mock.Mock())
         self.stubs.Set(self._manager.vif_driver, 'plug', mock.Mock())
         device_mock = mock.Mock()
         self.stubs.Set(instance.ip_lib, 'IPDevice',
@@ -561,7 +562,8 @@ class InstanceManagerTestCase(test.TestCase):
         self._manager.vif_driver.init_l3.assert_called_once()
         instance.ip_lib.IPDevice.assert_called_once()
         device_mock.route.pullup_route.assert_called_once()
-        self._manager._clean_garbage.assert_called_once_with(device_mock)
+        self._manager._remove_outdated_interfaces.\
+                assert_called_once_with(device_mock)
 
     def test_setup_service_port(self):
         fake_service_port = fake_network.FakePort(device_id='manila-share')

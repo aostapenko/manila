@@ -438,9 +438,9 @@ class InstanceManager(object):
         device.route.pullup_route(interface_name)
 
         # here we are checking for garbage devices from removed service port
-        self._clean_garbage(device)
+        self._remove_outdated_interfaces(device)
 
-    def _clean_garbage(self, device):
+    def _remove_outdated_interfaces(self, device):
         """Finds and removes network device, that was associated with deleted
         service port.
         """
