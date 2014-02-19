@@ -1,4 +1,4 @@
-# Copyright 2014 Mirantis Inc.
+# Copyright 2014 NetApp
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -12,10 +12,8 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-"""
-Module for managing nova instances for share drivers.
 
-"""
+"""Module for managing nova instances for share drivers."""
 
 import netaddr
 import os
@@ -82,17 +80,22 @@ CONF.register_opts(server_opts)
 
 
 def synchronized(f):
-    """Decorates function with unique locks for each share network."""
+    """Decorates function with unique locks for each share network.
+       share network id must be provided either as value/attribute
+       of one of args or as named argument.
+    """
     def wrapped_func(self, *args, **kwargs):
-        for arg in args:
-            share_network_id = getattr(arg, 'share_network_id', None)
-            if isinstance(arg, dict):
-                share_network_id = arg.get('share_network_id', None)
-            if share_network_id:
-                break
-        else:
-            raise exception.\
-                        ManilaException(_('Could not get share network id'))
+        share_network_id = kwargs.get('share_network_id', None)
+        if not share_network_id:
+            for arg in args:
+                share_network_id = getattr(arg, 'share_network_id', None)
+                if isinstance(arg, dict):
+                    share_network_id = arg.get('share_network_id', None)
+                if share_network_id:
+                    break
+            else:
+                raise exception.ServiceInstanceException(_('Could not get '
+                                                          'share network id'))
         with self.share_networks_locks.setdefault(share_network_id,
                                                   threading.RLock()):
             return f(self, *args, **kwargs)
@@ -114,8 +117,8 @@ class ServiceInstanceManager(object):
         """Do initialization."""
         super(ServiceInstanceManager, self).__init__(*args, **kwargs)
         if not CONF.service_instance_user:
-            raise exception.ManilaException(_('Service instance user is not '
-                                              'specified'))
+            raise exception.ServiceInstanceException(_('Service instance user '
+                                                       'is not specified'))
         self.admin_context = context.get_admin_context()
         self._execute = utils.execute
         self.compute_api = compute.API()
@@ -128,17 +131,16 @@ class ServiceInstanceManager(object):
                 self.service_tenant_id = self.neutron_api.admin_tenant_id
                 break
             except exception.NetworkException:
-                LOG.debug(_('Connection to neutron failed'))
+                LOG.debug(_('Connection to neutron failed.'))
                 attempts -= 1
                 time.sleep(3)
         else:
-            raise exception.\
-                    ManilaException(_('Can not receive service tenant id'))
+            raise exception.ServiceInstanceException(_('Can not receive '
+                                                       'service tenant id.'))
         self.share_networks_locks = {}
         self.share_networks_servers = {}
         self.service_network_id = self._get_service_network()
-        self.vif_driver = importutils.\
-                import_class(CONF.interface_driver)()
+        self.vif_driver = importutils.import_class(CONF.interface_driver)()
         self._setup_connectivity_with_service_instances()
 
     def _get_service_network(self):
@@ -148,16 +150,17 @@ class ServiceInstanceManager(object):
                     get_all_tenant_networks(self.service_tenant_id)
                     if network['name'] == service_network_name]
         if len(networks) > 1:
-            raise exception.ManilaException(_('Ambiguous service networks'))
+            raise exception.ServiceInstanceException(_('Ambiguous service '
+                                                       'networks.'))
         elif not networks:
             return self.neutron_api.network_create(self.service_tenant_id,
                                               service_network_name)['id']
         else:
             return networks[0]['id']
 
-    def _get_service_instance_name(self, share):
+    def _get_service_instance_name(self, share_network_id):
         """Returns service vms name."""
-        return CONF.service_instance_name_template % share['share_network_id']
+        return CONF.service_instance_name_template % share_network_id
 
     def _get_server_ip(self, server):
         """Returns service vms ip address."""
@@ -166,15 +169,17 @@ class ServiceInstanceManager(object):
             net_ips = net[CONF.service_network_name]
             return net_ips[0]
         except KeyError:
-            msg = _('Service vm is not attached to %s network')
+            msg = _('Service vm is not attached to %s network.')
         except IndexError:
-            msg = _('Service vm has no ips on %s network')
+            msg = _('Service vm has no ips on %s network.')
         msg = msg % CONF.service_network_name
         LOG.error(msg)
-        raise exception.ManilaException(msg)
+        raise exception.ServiceInstanceException(msg)
 
-    def _ensure_or_delete_server(self, context, server, update=False):
+    def _ensure_server(self, context, server, update=False):
         """Ensures that server exists and active, otherwise deletes it."""
+        if not server:
+            return False
         if update:
             try:
                 server.update(self.compute_api.server_get(context,
@@ -186,62 +191,64 @@ class ServiceInstanceManager(object):
             if self._check_server_availability(server):
                 return True
 
-        self._delete_server(context, server)
         return False
 
     def _delete_server(self, context, server):
         """Deletes the server."""
+        if not server:
+            return
         self.compute_api.server_delete(context, server['id'])
         t = time.time()
         while time.time() - t < CONF.max_time_to_build_instance:
             try:
-                server = self.compute_api.server_get(context,
-                                                     server['id'])
+                server = self.compute_api.server_get(context, server['id'])
             except exception.InstanceNotFound:
-                LOG.debug(_('Service instance was deleted succesfully'))
+                LOG.debug(_('Service instance was deleted succesfully.'))
                 break
             time.sleep(1)
         else:
-            raise exception.ManilaException(_('Instance have not been deleted '
-                                              'in %ss. Giving up') %
-                                              CONF.max_time_to_build_instance)
+            raise exception.ServiceInstanceException(_('Instance have not '
+                'been deleted in %ss. Giving up.') %
+                CONF.max_time_to_build_instance)
 
     @synchronized
-    def get_service_instance(self, context, share, create=True):
+    def get_service_instance(self, context, share_network_id, create=True):
         """Finds or creates and setups service vm."""
-        server = self.share_networks_servers.get(share['share_network_id'], {})
+        server = self.share_networks_servers.get(share_network_id, {})
         old_server_ip = server.get('ip', None)
-        if server and self._ensure_or_delete_server(context,
-                                                    server,
-                                                    update=True):
+        if self._ensure_server(context, server, update=True):
             return server
         else:
+            self._delete_server(context, server)
             server = {}
-            service_instance_name = self._get_service_instance_name(share)
+            service_instance_name = self._get_service_instance_name(
+                    share_network_id)
             search_opts = {'name': service_instance_name}
             servers = self.compute_api.server_list(context, search_opts, True)
             if len(servers) == 1:
                 server = servers[0]
                 server['ip'] = self._get_server_ip(server)
                 old_server_ip = server['ip']
-                if not self._ensure_or_delete_server(context, server):
+                if not self._ensure_server(context, server):
+                    self._delete_server(context, server)
                     server.clear()
             elif len(servers) > 1:
-                raise exception.\
-                        ManilaException(_('Ambiguous service instances'))
+                raise exception.ServiceInstanceException(
+                        _('Error. Ambiguous service instances.'))
             if not server and create:
                 server = self._create_service_instance(context,
                                                        service_instance_name,
-                                                       share, old_server_ip)
+                                                       share_network_id,
+                                                       old_server_ip)
         if server:
-            server['share_network_id'] = share['share_network_id']
+            server['share_network_id'] = share_network_id
             server['ip'] = self._get_server_ip(server)
             server['ssh_pool'] = self._get_ssh_pool(server)
             server['ssh'] = server['ssh_pool'].create()
             for helper in self._helpers.values():
                 helper.init_helper(server)
 
-        self.share_networks_servers[share['share_network_id']] = server
+        self.share_networks_servers[share_network_id] = server
         return server
 
     def _get_ssh_pool(self, server):
@@ -259,26 +266,27 @@ class ServiceInstanceManager(object):
             return
         path_to_public_key = os.path.expanduser(CONF.path_to_public_key)
         path_to_private_key = os.path.expanduser(CONF.path_to_private_key)
-        if not os.path.exists(path_to_public_key) or \
-                                    not os.path.exists(path_to_private_key):
+        if (not os.path.exists(path_to_public_key) or
+                                    not os.path.exists(path_to_private_key)):
             return
         keypair_name = CONF.manila_service_keypair_name
         keypairs = [k for k in self.compute_api.keypair_list(context)
                     if k.name == keypair_name]
         if len(keypairs) > 1:
-            raise exception.ManilaException(_('Ambiguous keypairs'))
+            raise exception.ServiceInstanceException(_('Ambiguous keypairs.'))
 
         public_key, _ = self._execute('cat',
                                       path_to_public_key,
                                       run_as_root=True)
         if not keypairs:
-            keypair = self.compute_api.keypair_import(context, keypair_name,
+            keypair = self.compute_api.keypair_import(context,
+                                                      keypair_name,
                                                       public_key)
         else:
             keypair = keypairs[0]
             if keypair.public_key != public_key:
                 LOG.debug('Public key differs from existing keypair. '
-                          'Creating new keypair')
+                          'Creating new keypair.')
                 self.compute_api.keypair_delete(context, keypair.id)
                 keypair = self.compute_api.keypair_import(context,
                                                           keypair_name,
@@ -294,21 +302,24 @@ class ServiceInstanceManager(object):
         if len(images) == 1:
             return images[0]
         elif not images:
-            raise exception.\
-                    ManilaException(_('No appropriate image was found'))
+            raise exception.ServiceInstanceException(_('No appropriate '
+                                                       'image was found.'))
         else:
-            raise exception.ManilaException(_('Ambiguous image name'))
+            raise exception.ServiceInstanceException(
+                                    _('Ambiguous image name.'))
 
-    def _create_service_instance(self, context, instance_name, share,
-                                 old_server_ip):
+    def _create_service_instance(self, context, instance_name,
+                                 share_network_id, old_server_ip):
         """Creates service vm and sets up networking for it."""
         service_image_id = self._get_service_image(context)
         key_name = self._get_key(context)
         if not CONF.service_instance_password and not key_name:
-            raise exception.ManilaException(_('Neither service instance'
-                                             'password nor key are available'))
+            raise exception.ServiceInstanceException(
+                _('Neither service instance password nor key are available.'))
 
-        port = self._setup_network_for_instance(context, share, old_server_ip)
+        port = self._setup_network_for_instance(context,
+                                                share_network_id,
+                                                old_server_ip)
         try:
             self._setup_connectivity_with_service_instances()
         except Exception as e:
@@ -316,18 +327,21 @@ class ServiceInstanceManager(object):
             self.neutron_api.delete_port(port['id'])
             raise
         service_instance = self.compute_api.server_create(context,
-                                instance_name, service_image_id,
-                                CONF.service_instance_flavor_id,
-                                key_name, None, None,
-                                nics=[{'port-id': port['id']}])
+                                              instance_name,
+                                              service_image_id,
+                                              CONF.service_instance_flavor_id,
+                                              key_name,
+                                              None,
+                                              None,
+                                              nics=[{'port-id': port['id']}])
 
         t = time.time()
         while time.time() - t < CONF.max_time_to_build_instance:
             if service_instance['status'] == 'ACTIVE':
                 break
             if service_instance['status'] == 'ERROR':
-                raise exception.ManilaException(_('Failed to build service '
-                                                  'instance'))
+                raise exception.ServiceInstanceException(
+                        _('Failed to build service instance.'))
             time.sleep(1)
             try:
                 service_instance = self.compute_api.server_get(context,
@@ -335,21 +349,22 @@ class ServiceInstanceManager(object):
             except exception.InstanceNotFound as e:
                 LOG.debug(e)
         else:
-            raise exception.ManilaException(_('Instance have not been spawned '
-                                              'in %ss. Giving up') %
-                                              CONF.max_time_to_build_instance)
+            raise exception.ServiceInstanceException(
+                    _('Instance have not been spawned in %ss. Giving up.') %
+                    CONF.max_time_to_build_instance)
 
         service_instance['ip'] = self._get_server_ip(service_instance)
         if not self._check_server_availability(service_instance):
-            raise exception.ManilaException(_('SSH connection have not been '
-                                              'established in %ss. Giving up')
-                                             % CONF.max_time_to_build_instance)
+            raise exception.ServiceInstanceException(
+                            _('SSH connection have not been '
+                              'established in %ss. Giving up.') %
+                              CONF.max_time_to_build_instance)
         return service_instance
 
     def _check_server_availability(self, server):
         t = time.time()
         while time.time() - t < CONF.max_time_to_build_instance:
-            LOG.debug('Checking service vm availablity')
+            LOG.debug('Checking service vm availablity.')
             try:
                 socket.socket().connect((server['ip'], 22))
                 LOG.debug(_('Service vm is available via ssh.'))
@@ -360,27 +375,18 @@ class ServiceInstanceManager(object):
                 time.sleep(5)
         return False
 
-    def _setup_network_for_instance(self, context, share, old_server_ip):
+    def _setup_network_for_instance(self, context, share_network_id,
+                                    old_server_ip):
         """Setups network for service vm."""
-        service_network = self.neutron_api.get_network(self.service_network_id)
-        all_service_subnets = [self.neutron_api.get_subnet(subnet_id)
-                               for subnet_id in service_network['subnets']]
-        service_subnets = [subnet for subnet in all_service_subnets
-                           if subnet['name'] == share['share_network_id']]
-        if len(service_subnets) > 1:
-            raise exception.ManilaException(_('Ambiguous subnets'))
-        elif not service_subnets:
-            service_subnet = \
-                    self.neutron_api.subnet_create(self.service_tenant_id,
+        service_subnet = self._get_service_subnet(share_network_id)
+        if not service_subnet:
+            service_subnet = self.neutron_api.subnet_create(
+                        self.service_tenant_id,
                         self.service_network_id,
-                        share['share_network_id'],
-                        self._get_cidr_for_subnet(all_service_subnets))
-        else:
-            service_subnet = service_subnets[0]
+                        share_network_id,
+                        self._get_cidr_for_subnet())
 
-        share_network = self.db.share_network_get(context,
-                                                  share['share_network_id'])
-        private_router = self._get_private_router(share_network)
+        private_router = self._get_private_router(share_network_id)
         try:
             self.neutron_api.router_add_interface(private_router['id'],
                                                   service_subnet['id'])
@@ -388,7 +394,7 @@ class ServiceInstanceManager(object):
             if 'already has' not in e.msg:
                 raise
             LOG.debug(_('Subnet %(subnet_id)s is already attached to the '
-                        'router %(router_id)s') %
+                        'router %(router_id)s.') %
                                     {'subnet_id': service_subnet['id'],
                                      'router_id': private_router['id']})
 
@@ -398,23 +404,26 @@ class ServiceInstanceManager(object):
                                             fixed_ip=old_server_ip,
                                             device_owner='manila')
 
-    def _get_private_router(self, share_network):
+    def _get_private_router(self, share_network_id):
         """Returns router attached to private subnet gateway."""
-        private_subnet = self.neutron_api.\
-                get_subnet(share_network['neutron_subnet_id'])
+        share_network = self.db.share_network_get(self.admin_context,
+                                                  share_network_id)
+        private_subnet = self.neutron_api.get_subnet(
+                                            share_network['neutron_subnet_id'])
         if not private_subnet['gateway_ip']:
-            raise exception.ManilaException(_('Subnet must have gateway'))
+            raise exception.ServiceInstanceException(
+                    _('Subnet must have gateway.'))
         private_network_ports = [p for p in self.neutron_api.list_ports(
                                  network_id=share_network['neutron_net_id'])]
         for p in private_network_ports:
             fixed_ip = p['fixed_ips'][0]
-            if fixed_ip['subnet_id'] == private_subnet['id'] and \
-                     fixed_ip['ip_address'] == private_subnet['gateway_ip']:
+            if (fixed_ip['subnet_id'] == private_subnet['id'] and
+                     fixed_ip['ip_address'] == private_subnet['gateway_ip']):
                 private_subnet_gateway_port = p
                 break
         else:
-            raise exception.ManilaException(_('Subnet gateway is not attached '
-                                              'the router'))
+            raise exception.ServiceInstanceException(
+                    _('Subnet gateway is not attached the router.'))
         private_subnet_router = self.neutron_api.show_router(
                                   private_subnet_gateway_port['device_id'])
         return private_subnet_router
@@ -423,7 +432,8 @@ class ServiceInstanceManager(object):
         """Setups connectivity with service instances by creating port
         in service network, creating and setting up required network devices.
         """
-        port = self._setup_service_port()
+        port = self._get_service_port()
+        port = self._add_fixed_ips_to_service_port(port)
         interface_name = self.vif_driver.get_device_name(port)
         self.vif_driver.plug(port['id'], interface_name, port['mac_address'])
         ip_cidrs = []
@@ -462,21 +472,21 @@ class ServiceInstanceManager(object):
             if device_cidr_set & cidr_set:
                 self.vif_driver.unplug(dev_name)
 
-    def _setup_service_port(self):
+    def _get_service_port(self):
         """Find or creates neutron port, that will be used for connectivity
         with service instances.
         """
         ports = [port for port in self.neutron_api.
                  list_ports(device_id='manila-share')]
         if len(ports) > 1:
-            raise exception.\
-                        ManilaException(_('Error. Ambiguous service ports'))
+            raise exception.ServiceInstanceException(
+                    _('Error. Ambiguous service ports.'))
         elif not ports:
             services = self.db.service_get_all_by_topic(self.admin_context,
                                                         'manila-share')
             host = services[0]['host'] if services else None
             if host is None:
-                raise exception.ManilaException('Unable to get host')
+                raise exception.ServiceInstanceException('Unable to get host')
             port = self.neutron_api.create_port(self.service_tenant_id,
                                        self.service_network_id,
                                        device_id='manila-share',
@@ -484,7 +494,9 @@ class ServiceInstanceManager(object):
                                        host_id=host)
         else:
             port = ports[0]
+        return port
 
+    def _add_fixed_ips_to_service_port(self, port):
         network = self.neutron_api.get_network(self.service_network_id)
         subnets = set(network['subnets'])
         port_fixed_ips = []
@@ -503,8 +515,23 @@ class ServiceInstanceManager(object):
 
         return port
 
-    def _get_cidr_for_subnet(self, subnets):
+    def _remove_fixed_ip_from_service_port(self, port, subnet_id):
+        port_fixed_ips = []
+        for fixed_ip in port['fixed_ips']:
+            if fixed_ip['subnet_id'] == subnet_id:
+                continue
+            port_fixed_ips.append({'subnet_id': fixed_ip['subnet_id'],
+                                   'ip_address': fixed_ip['ip_address']})
+
+        if port_fixed_ips != port['fixed_ips']:
+            port = self.neutron_api.update_port_fixed_ips(
+                   port['id'], {'fixed_ips': port_fixed_ips})
+
+        return port
+
+    def _get_cidr_for_subnet(self):
         """Returns not used cidr for service subnet creating."""
+        subnets = self._get_all_service_subnets()
         used_cidrs = set(subnet['cidr'] for subnet in subnets)
         serv_cidr = netaddr.IPNetwork(CONF.service_network_cidr)
         for subnet in serv_cidr.subnet(29):
@@ -512,4 +539,36 @@ class ServiceInstanceManager(object):
             if cidr not in used_cidrs:
                 return cidr
         else:
-            raise exception.ManilaException(_('No available cidrs'))
+            raise exception.ServiceInstanceException(_('No available cidrs.'))
+
+    def delete_share_infrastructure(self, context, share_network_id):
+        server = self.get_service_instance(context,
+                                           share_network_id=share_network_id,
+                                           create=False)
+        if server:
+            self._delete_server(context, server)
+        subnet_id = self._get_service_subnet(share_network_id)
+        if subnet_id:
+            router = self._get_private_router(share_network_id)
+            port = self._get_service_port()
+            self.neutron_api.router_remove_interface(router['id'], subnet_id)
+            self._remove_fixed_ip_from_service_port(port, subnet_id)
+            self.neutron_api.delete_subnet(subnet_id)
+            self._setup_connectivity_with_service_instances()
+
+    def _get_all_service_subnets(self):
+        service_network = self.neutron_api.get_network(self.service_network_id)
+        return [self.neutron_api.get_subnet(subnet_id)
+                for subnet_id in service_network['subnets']]
+
+    def _get_service_subnet(self, share_network_id):
+        all_service_subnets = self._get_all_service_subnets()
+        service_subnets = [subnet for subnet in all_service_subnets
+                           if subnet['name'] == share_network_id]
+        if len(service_subnets) == 1:
+            return service_subnets[0]
+        elif not service_subnets:
+            return None
+        else:
+            raise exception.ServiceInstanceException(_('Ambiguous service '
+                                                       'subnets.'))

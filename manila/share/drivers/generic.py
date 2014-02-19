@@ -1,4 +1,4 @@
-# Copyright 2014 Mirantis Inc.
+# Copyright 2014 NetApp
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -12,10 +12,8 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-"""
-Generic Driver for shares.
 
-"""
+"""Generic Driver for shares."""
 
 import ConfigParser
 import os
@@ -110,7 +108,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def _setup_helpers(self):
         """Initializes protocol-specific NAS drivers."""
         for helper_str in self.configuration.share_helpers:
-            share_proto, _, import_str = helper_str.partition('=')
+            share_proto, __, import_str = helper_str.partition('=')
             helper = importutils.import_class(import_str)
             self._helpers[share_proto.upper()] = helper(self._execute,
                                                     self.configuration,
@@ -119,9 +117,10 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def create_share(self, context, share):
         """Creates share."""
         if share['share_network_id'] is None:
-            raise exception.\
-                    ManilaException(_('Share Network is not specified'))
-        server = self.get_service_instance(self.admin_context, share)
+            raise exception.ManilaException(
+                    _('Share Network is not specified'))
+        server = self.get_service_instance(self.admin_context,
+                                    share_network_id=share['share_network_id'])
         volume = self._allocate_container(context, share)
         volume = self._attach_volume(context, share, server, volume)
         self._format_device(server, volume)
@@ -223,8 +222,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if len(volume_snapshot_list) == 1:
             volume_snapshot = volume_snapshot_list[0]
         elif len(volume_snapshot_list) > 1:
-            raise exception.\
-                    ManilaException(_('Error. Ambiguous volume snaphots'))
+            raise exception.ManilaException(
+                    _('Error. Ambiguous volume snaphots'))
         return volume_snapshot
 
     @synchronized
@@ -258,7 +257,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         lit = 'b'
         while lit in used_literals:
             lit = chr(ord(lit) + 1)
-        device_name = '/dev/vd' + lit
+        device_name = '/dev/vd%s' % lit
         return device_name
 
     def _allocate_container(self, context, share, snapshot=None):
@@ -292,8 +291,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if volume:
             self.volume_api.delete(context, volume['id'])
             t = time.time()
-            while time.time() - t < self.configuration.\
-                                                    max_time_to_create_volume:
+            while (time.time() - t <
+                   self.configuration.max_time_to_create_volume):
                 try:
                     volume = self.volume_api.get(context, volume['id'])
                 except exception.VolumeNotFound:
@@ -329,15 +328,16 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
         data['total_capacity_gb'] = 'infinite'
         data['free_capacity_gb'] = 'infinite'
-        data['reserved_percentage'] = \
-            self.configuration.reserved_share_percentage
+        data['reserved_percentage'] = (self.configuration.
+                reserved_share_percentage)
         data['QoS_support'] = False
 
         self._stats = data
 
     def create_share_from_snapshot(self, context, share, snapshot):
         """Is called to create share from snapshot."""
-        server = self.get_service_instance(self.admin_context, share)
+        server = self.get_service_instance(self.admin_context,
+                                    share_network_id=share['share_network_id'])
         volume = self._allocate_container(context, share, snapshot)
         volume = self._attach_volume(context, share, server, volume)
         self._mount_device(context, share, server, volume)
@@ -350,7 +350,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if not share['share_network_id']:
             return
         server = self.get_service_instance(self.admin_context,
-                                           share, create=False)
+                                    share_network_id=share['share_network_id'],
+                                    create=False)
         if server:
             self._get_helper(share).remove_export(server, share['name'])
             self._unmount_device(context, share, server)
@@ -360,8 +361,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def create_snapshot(self, context, snapshot):
         """Creates a snapshot."""
         volume = self._get_volume(context, snapshot['share_id'])
-        volume_snapshot_name = self.configuration.\
-                volume_snapshot_name_template % snapshot['id']
+        volume_snapshot_name = (self.configuration.
+                                volume_snapshot_name_template % snapshot['id'])
         volume_snapshot = self.volume_api.create_snapshot_force(context,
                                               volume['id'],
                                               volume_snapshot_name,
@@ -403,7 +404,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def ensure_share(self, context, share):
         """Ensure that storage are mounted and exported."""
-        server = self.get_service_instance(context, share)
+        server = self.get_service_instance(context,
+               share_network_id=share['share_network_id'])
         volume = self._get_volume(context, share['id'])
         volume = self._attach_volume(context, share, server, volume)
         self._mount_device(context, share, server, volume)
@@ -412,8 +414,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def allow_access(self, context, share, access):
         """Allow access to the share."""
         server = self.get_service_instance(self.admin_context,
-                                           share,
-                                           create=False)
+                                    share_network_id=share['share_network_id'],
+                                    create=False)
         if not server:
             raise exception.ManilaException('Server not found. Try to '
                                             'restart manila share service')
@@ -426,8 +428,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if not share['share_network_id']:
             return
         server = self.get_service_instance(self.admin_context,
-                                           share,
-                                           create=False)
+                                    share_network_id=share['share_network_id'],
+                                    create=False)
         if server:
             self._get_helper(share).deny_access(server, share['name'],
                                                 access['access_type'],
@@ -553,8 +555,7 @@ class CIFSHelper(NASHelperBase):
         local_config = self._create_local_config(server['share_network_id'])
         config_dir = os.path.dirname(self.config_path)
         try:
-            _ssh_exec(server, ['sudo', 'mkdir',
-                               config_dir])
+            _ssh_exec(server, ['sudo', 'mkdir', config_dir])
         except exception.ProcessExecutionError as e:
             if 'File exists' not in e.stderr:
                 raise
@@ -612,12 +613,12 @@ class CIFSHelper(NASHelperBase):
         self._update_config(parser, config)
         self._write_remote_config(config, server)
         _ssh_exec(server, ['sudo', 'smbcontrol', 'all', 'close-share',
-                       share_name])
+                  share_name])
 
     @synchronized
     def _write_remote_config(self, config, server):
         with open(config, 'r') as f:
-            cfg = "'" + f.read() + "'"
+            cfg = "'%s'" % f.read()
         _ssh_exec(server, ['echo %s > %s' % (cfg, self.config_path)])
 
     def allow_access(self, server, share_name, access_type, access):
@@ -675,8 +676,7 @@ class CIFSHelper(NASHelperBase):
         #Check that configuration is correct
         with open(self.test_config, 'w') as fp:
             parser.write(fp)
-        self._execute('testparm', '-s', self.test_config,
-                      check_exit_code=True)
+        self._execute('testparm', '-s', self.test_config, check_exit_code=True)
         #save it
         with open(config, 'w') as fp:
             parser.write(fp)
