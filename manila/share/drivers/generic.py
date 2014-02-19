@@ -121,7 +121,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if share['share_network_id'] is None:
             raise exception.\
                     ManilaException(_('Share Network is not specified'))
-        server = self.get_service_instance(self.admin_context, share)
+        server = self.get_service_instance(self.admin_context,
+                                    share_network_id=share['share_network_id'])
         volume = self._allocate_container(context, share)
         volume = self._attach_volume(context, share, server, volume)
         self._format_device(server, volume)
@@ -337,7 +338,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def create_share_from_snapshot(self, context, share, snapshot):
         """Is called to create share from snapshot."""
-        server = self.get_service_instance(self.admin_context, share)
+        server = self.get_service_instance(self.admin_context,
+                                    share_network_id=share['share_network_id'])
         volume = self._allocate_container(context, share, snapshot)
         volume = self._attach_volume(context, share, server, volume)
         self._mount_device(context, share, server, volume)
@@ -350,7 +352,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if not share['share_network_id']:
             return
         server = self.get_service_instance(self.admin_context,
-                                           share, create=False)
+                                    share_network_id=share['share_network_id'],
+                                    create=False)
         if server:
             self._get_helper(share).remove_export(server, share['name'])
             self._unmount_device(context, share, server)
@@ -403,7 +406,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
 
     def ensure_share(self, context, share):
         """Ensure that storage are mounted and exported."""
-        server = self.get_service_instance(context, share)
+        server = self.get_service_instance(context,
+               share_network_id=share['share_network_id'])
         volume = self._get_volume(context, share['id'])
         volume = self._attach_volume(context, share, server, volume)
         self._mount_device(context, share, server, volume)
@@ -412,8 +416,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def allow_access(self, context, share, access):
         """Allow access to the share."""
         server = self.get_service_instance(self.admin_context,
-                                           share,
-                                           create=False)
+                                    share_network_id=share['share_network_id'],
+                                    create=False)
         if not server:
             raise exception.ManilaException('Server not found. Try to '
                                             'restart manila share service')
@@ -426,8 +430,8 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         if not share['share_network_id']:
             return
         server = self.get_service_instance(self.admin_context,
-                                           share,
-                                           create=False)
+                                    share_network_id=share['share_network_id'],
+                                    create=False)
         if server:
             self._get_helper(share).deny_access(server, share['name'],
                                                 access['access_type'],
