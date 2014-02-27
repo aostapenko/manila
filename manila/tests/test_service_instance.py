@@ -1,4 +1,4 @@
-# Copyright 2014 Mirantis Inc.
+# Copyright 2014 NetApp
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -12,6 +12,7 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
+
 """Unit tests for the instance module."""
 
 import copy
