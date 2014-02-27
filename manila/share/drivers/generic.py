@@ -12,10 +12,8 @@
 #    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
 #    License for the specific language governing permissions and limitations
 #    under the License.
-"""
-Generic Driver for shares.
 
-"""
+"""Generic Driver for shares."""
 
 import ConfigParser
 import os
@@ -110,7 +108,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
     def _setup_helpers(self):
         """Initializes protocol-specific NAS drivers."""
         for helper_str in self.configuration.share_helpers:
-            share_proto, _, import_str = helper_str.partition('=')
+            share_proto, __, import_str = helper_str.partition('=')
             helper = importutils.import_class(import_str)
             self._helpers[share_proto.upper()] = helper(self._execute,
                                                     self.configuration,
@@ -259,7 +257,7 @@ class GenericShareDriver(driver.ExecuteMixin, driver.ShareDriver):
         lit = 'b'
         while lit in used_literals:
             lit = chr(ord(lit) + 1)
-        device_name = '/dev/vd' + lit
+        device_name = '/dev/vd%s' % lit
         return device_name
 
     def _allocate_container(self, context, share, snapshot=None):
